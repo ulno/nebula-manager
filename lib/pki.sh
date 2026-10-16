@@ -1,0 +1,761 @@
+#!/bin/bash
+# shellcheck shell=bash
+#
+# lib/pki.sh - Certificate authority, signing, inspection & bundling
+# ----------------------------------------------------------------
+# All PKI work happens in a user-selectable "certificate workspace".
+# When that workspace is user-owned (the default), none of this needs
+# root. Only an explicitly privileged target directory triggers sudo
+# (via ensure_dir/elevate from lib/system.sh).
+#
+# Workspace resolution precedence:
+#   1. --cert-dir <path>            (CERT_DIR_OVERRIDE)
+#   2. $NEBULA_KEYS_DIR             (environment)
+#   3. saved interactive selection  (CERT_DIR_SELECTED / state file)
+#   4. legacy per-server dir        ($NEBULA_DIR/$NEBULA_CERT_FOLDER)
+#   5. default user directory       ($HOME/.local/share/nebula-manager/keys)
+
+[[ -n "${NEBULA_MANAGER_PKI_SOURCED:-}" ]] && return 0
+NEBULA_MANAGER_PKI_SOURCED=1
+
+###################################################################
+################### Certificate workspace directory ################
+###################################################################
+
+# Default, per-user, non-privileged certificate store.
+nebula_keys_default_dir() {
+    echo "${XDG_DATA_HOME:-$HOME/.local/share}/nebula-manager/keys"
+}
+
+# Where the "active workspace" selection is persisted.
+nebula_keys_state_file() {
+    echo "${XDG_CONFIG_HOME:-$HOME/.config}/nebula-manager/certdir"
+}
+
+save_cert_dir_selection() {
+    local dir="$1" f
+    f="$(nebula_keys_state_file)"
+    mkdir -p "$(dirname "$f")" 2>/dev/null
+    printf '%s\n' "$dir" > "$f"
+}
+
+load_cert_dir_selection() {
+    local f
+    f="$(nebula_keys_state_file)"
+    [[ -f "$f" ]] && head -n1 "$f"
+}
+
+# resolve_cert_dir : print the active certificate workspace directory.
+resolve_cert_dir() {
+    if [[ -n "${CERT_DIR_OVERRIDE:-}" ]]; then
+        printf '%s\n' "$CERT_DIR_OVERRIDE"; return 0
+    fi
+    if [[ -n "${NEBULA_KEYS_DIR:-}" ]]; then
+        printf '%s\n' "$NEBULA_KEYS_DIR"; return 0
+    fi
+    if [[ -n "${CERT_DIR_SELECTED:-}" ]]; then
+        printf '%s\n' "$CERT_DIR_SELECTED"; return 0
+    fi
+    local saved; saved="$(load_cert_dir_selection)"
+    if [[ -n "$saved" ]]; then
+        printf '%s\n' "$saved"; return 0
+    fi
+    if [[ -n "${NEBULA_DIR:-}" ]]; then
+        printf '%s\n' "${NEBULA_DIR}/${NEBULA_CERT_FOLDER:-certs}"; return 0
+    fi
+    nebula_keys_default_dir
+}
+
+# The active workspace, materialised (created if missing).
+ensure_cert_dir() {
+    local dir="${1:-$(resolve_cert_dir)}"
+    ensure_dir "$dir" || return 1
+    printf '%s\n' "$dir"
+}
+
+# Interactive workspace selector (uses the whiptail/dialog/plain dispatcher).
+select_cert_workspace() {
+    local current default_dir saved custom choice
+    current="$(resolve_cert_dir)"
+    default_dir="$(nebula_keys_default_dir)"
+    show_menu_header "$MENU_PATH" "Certificates" "Workspaces"
+    echo -e "${BOLD}${YELLOW}Active certificate workspace:${RESET} ${CYAN}$current${RESET}\n"
+    choice="$(ui_menu "Certificate Workspace" "Select a workspace:" \
+        "current"   "Use current: $current" \
+        "default"   "Use default user store: $default_dir" \
+        "server"    "Use this server's dir: ${NEBULA_DIR:-/etc/nebula}/${NEBULA_CERT_FOLDER:-certs}" \
+        "custom"    "Enter a custom path..." )" || return 0
+
+    case "$choice" in
+        current) CERT_DIR_SELECTED="$current" ;;
+        default) CERT_DIR_SELECTED="$default_dir" ;;
+        server)  CERT_DIR_SELECTED="${NEBULA_DIR:-/etc/nebula}/${NEBULA_CERT_FOLDER:-certs}" ;;
+        custom)
+            custom="$(ui_input "Certificate Workspace" "Path to certificate store:" "${NEBULA_KEYS_DIR:-$default_dir}")" || return 0
+            [[ -z "$custom" ]] && return 0
+            CERT_DIR_SELECTED="$custom"
+            ;;
+        *) return 0 ;;
+    esac
+    save_cert_dir_selection "$CERT_DIR_SELECTED"
+    ensure_dir "$CERT_DIR_SELECTED" || { log_error "Could not create $CERT_DIR_SELECTED"; return 1; }
+    log_success "Active certificate workspace set to: ${CYAN}$CERT_DIR_SELECTED${RESET}"
+}
+
+###################################################################
+########################## Nebula cert bin ########################
+###################################################################
+
+pki_cert_bin() {
+    local bin="${NEBULA_BIN_PATH:-/usr/local/bin}/nebula-cert"
+    if [[ -x "$bin" ]]; then
+        printf '%s\n' "$bin"; return 0
+    fi
+    local resolved
+    resolved="$(command -v nebula-cert 2>/dev/null)"
+    if [[ -n "$resolved" ]]; then
+        # Always hand back an absolute path so callers can dirname it safely.
+        printf '%s\n' "$(readlink -f "$resolved")"; return 0
+    fi
+    log_error "nebula-cert not found (looked at $bin and \$PATH). Install Nebula first."
+    return 1
+}
+
+# Normalize print -json output to a single object regardless of version
+nebula_cert_json() {
+    local bin_path="$1"
+    local cert_path="$2"
+    "$bin_path/nebula-cert" print -json -path "$cert_path" 2>/dev/null | \
+        jq -r '
+            if type == "array" then .[0] else . end |
+            if .details.networks and (.details.ips | not) then .details.ips = .details.networks else . end |
+            if .details.ips and (.details.networks | not) then .details.networks = .details.ips else . end |
+            if .details.unsafeNetworks and (.details.subnets | not) then .details.subnets = .details.unsafeNetworks else . end |
+            if .details.networks      == null then .details.networks      = [] else . end |
+            if .details.ips           == null then .details.ips           = [] else . end |
+            if .details.subnets       == null then .details.subnets       = [] else . end |
+            if .details.groups        == null then .details.groups        = [] else . end
+        ' 2>/dev/null
+}
+
+# Locate the CA, preferring the workspace itself, then the legacy server dir.
+find_ca_crt() {
+    local dir="${1:-$(resolve_cert_dir)}"
+    for c in "$dir/ca.crt" "${NEBULA_DIR:-}/ca.crt"; do
+        [[ -n "$c" && -f "$c" ]] && { printf '%s\n' "$c"; return 0; }
+    done
+    return 1
+}
+
+find_ca_key() {
+    local dir="${1:-$(resolve_cert_dir)}"
+    for k in "$dir/ca.key" "${NEBULA_DIR:-}/ca.key"; do
+        [[ -n "$k" && -f "$k" ]] && { printf '%s\n' "$k"; return 0; }
+    done
+    return 1
+}
+
+pki_cert_days_left() {
+    local cert="$1" bin na epoch_na now
+    bin="$(pki_cert_bin)" || return 1
+    na=$(nebula_cert_json "$(dirname "$bin")" "$cert" | jq -r '.details.notAfter // empty')
+    [[ -z "$na" ]] && return 1
+    epoch_na=$(date -d "$na" +%s 2>/dev/null) || return 1
+    now=$(date +%s)
+    echo $(( (epoch_na - now) / 86400 ))
+}
+
+###################################################################
+######################## CA & cert creation ########################
+###################################################################
+
+# Non-interactive CA creation. Consumes (via environment):
+#   CA_NAME, CA_DURATION, CA_GROUPS, CA_IPS, CA_SUBNETS, CA_ENCRYPT, CERT_DIR
+pki_ca_create() {
+    local cert_dir="${CERT_DIR:-$(resolve_cert_dir)}"
+    local bin; bin="$(pki_cert_bin)" || return 1
+    local name="${CA_NAME:?CA name is required}"
+    local duration="${CA_DURATION:-999999h}"
+    local -a args=("$bin" ca -name "$name" -duration "$duration"
+        -out-key "$cert_dir/ca.key" -out-crt "$cert_dir/ca.crt")
+    [[ -n "${CA_GROUPS:-}"  ]] && args+=(-groups "$CA_GROUPS")
+    [[ -n "${CA_IPS:-}"     ]] && args+=(-ips "$CA_IPS")
+    [[ -n "${CA_SUBNETS:-}" ]] && args+=(-subnets "$CA_SUBNETS")
+    [[ "${CA_ENCRYPT:-n}" == "y" ]] && args+=(-encrypt)
+
+    ensure_dir "$cert_dir" || return 1
+    rm -f "$cert_dir/ca.crt" "$cert_dir/ca.key"
+    if "${args[@]}"; then
+        log_success "CA generated: $cert_dir/ca.key, $cert_dir/ca.crt"
+        return 0
+    fi
+    log_error "Failed to generate CA."
+    return 1
+}
+
+# Non-interactive cert signing. Consumes (via environment):
+#   SIGN_NAME, SIGN_IP, SIGN_GROUPS, SIGN_SUBNETS, SIGN_DURATION_H, CERT_DIR
+pki_sign() {
+    local cert_dir="${CERT_DIR:-$(resolve_cert_dir)}"
+    local bin; bin="$(pki_cert_bin)" || return 1
+    local name="${SIGN_NAME:?certificate name is required}"
+    local ip="${SIGN_IP:?certificate IP is required}"
+    local ca_crt ca_key
+    ca_crt="$(find_ca_crt "$cert_dir")" || { log_error "CA certificate not found in $cert_dir"; return 1; }
+    ca_key="$(find_ca_key "$cert_dir")" || { log_error "CA key not found in $cert_dir"; return 1; }
+
+    local -a args=("$bin" sign -name "$name" -ip "$ip"
+        -ca-crt "$ca_crt" -ca-key "$ca_key"
+        -out-crt "$cert_dir/$name.crt" -out-key "$cert_dir/$name.key")
+    [[ -n "${SIGN_DURATION_H:-}" ]] && args+=(-duration "${SIGN_DURATION_H}h")
+    [[ -n "${SIGN_GROUPS:-}"     ]] && args+=(-groups "$SIGN_GROUPS")
+    [[ -n "${SIGN_SUBNETS:-}"    ]] && args+=(-subnets "$SIGN_SUBNETS")
+
+    ensure_dir "$cert_dir" || return 1
+    if "${args[@]}"; then
+        log_success "Certificate signed: $cert_dir/$name.crt and $cert_dir/$name.key"
+        return 0
+    fi
+    log_error "Failed to sign certificate."
+    return 1
+}
+
+# Interactive CA generation (TUI wrapper)
+generate_nebula_ca() {
+    local cert_dir; cert_dir="$(resolve_cert_dir)"
+    local ca_key="$cert_dir/ca.key" ca_crt="$cert_dir/ca.crt"
+    ensure_dir "$cert_dir" || { log_error "Nebula directory $cert_dir does not exist."; return 1; }
+
+    if [[ -f "$ca_key" && -f "$ca_crt" ]]; then
+        log_info "CA already exists:"
+        "$(pki_cert_bin)" print -path "$ca_crt"
+        read -p "$(show_status 'question') CA already exists. Do you want to overwrite it? (y/n): " overwrite
+        [[ "$overwrite" != "y" ]] && { log_info "CA generation canceled."; return; }
+    fi
+    local ca_name
+    while [[ -z "$ca_name" ]]; do
+        read -p "$(show_status 'question') Enter the CA name (required): " ca_name
+    done
+    read -p "$(show_status 'question') Enter the duration (default 999999h, press enter to skip): " ca_duration
+    read -p "$(show_status 'question') Enter groups (optional, comma-separated, press enter to skip): " ca_groups
+    read -p "$(show_status 'question') Enter IPs (optional, comma-separated CIDR, press enter to skip): " ca_ips
+    read -p "$(show_status 'question') Enter subnets (optional, comma-separated CIDR, press enter to skip): " ca_subnets
+    read -p "$(show_status 'question') Use encryption for the private key? (y/n, default n): " use_encrypt
+    [[ "$use_encrypt" == "y" ]] && CA_ENCRYPT="y" || CA_ENCRYPT="n"
+
+    CERT_DIR="$cert_dir" CA_NAME="$ca_name" CA_DURATION="${ca_duration:-999999h}" \
+        CA_GROUPS="$ca_groups" CA_IPS="$ca_ips" CA_SUBNETS="$ca_subnets" CA_ENCRYPT="$CA_ENCRYPT" \
+        pki_ca_create
+}
+
+# Interactive cert signing (TUI wrapper)
+generate_nebula_cert() {
+    local cert_dir; cert_dir="$(resolve_cert_dir)"
+    local cert_gen_name cert_gen_ip cert_gen_groups include_subnets_choice cert_gen_subnets cert_gen_duration
+    ensure_dir "$cert_dir" || { log_error "Failed to create $cert_dir."; return 1; }
+
+    while [[ -z "$cert_gen_name" ]]; do read -p "$(show_status 'question') Enter the certificate name: " cert_gen_name; done
+
+    if [[ -f "$cert_dir/$cert_gen_name.crt" ]]; then
+        log_info "Certificate $cert_gen_name already exists in $cert_dir"
+        "$(pki_cert_bin)" print -path "$cert_dir/$cert_gen_name.crt"
+        read -p "$(show_status 'question') Do you want to overwrite this certificate? (y/n): " overwrite_choice
+        [[ "$overwrite_choice" != "y" ]] && { log_info "Certificate generation aborted."; return; }
+    fi
+
+    while true; do
+        read -p "$(show_status 'question') Enter the IP address (e.g., 192.168.222.16/24): " cert_gen_ip
+        if [[ "$cert_gen_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}(/([0-9]|[1-2][0-9]|3[0-2]))?$ ]]; then
+            [[ "$cert_gen_ip" =~ / ]] || cert_gen_ip="${cert_gen_ip}/24"
+            local ip_taken=false
+            for existing_crt in "$cert_dir"/*.crt; do
+                [[ -f "$existing_crt" ]] || continue
+                if nebula_cert_json "$(dirname "$(pki_cert_bin)")" "$existing_crt" | jq -e --arg ip "$cert_gen_ip" '.details.ips[]? == $ip' > /dev/null; then
+                    log_error "IP $cert_gen_ip is already assigned in ${CYAN}$(basename "$existing_crt")${RED}. Choose another."
+                    ip_taken=true
+                    break
+                fi
+            done
+            [[ "$ip_taken" == false ]] && break
+        else
+            log_error "Invalid IP address. Please enter a valid IP (e.g., 192.168.222.16/24)."
+        fi
+    done
+    read -p "$(show_status 'question') Enter the groups (optional, e.g., servers,desktops): " cert_gen_groups
+    read -p "$(show_status 'question') Do you want to include subnets for this certificate? (y/n): " include_subnets_choice
+    if [[ "$include_subnets_choice" == "y" ]]; then
+        read -p "$(show_status 'question') Enter the subnets in CIDR format (comma-separated, e.g., 192.168.1.0/24,10.0.0.0/16): " cert_gen_subnets
+    fi
+    while true; do
+        read -p "$(show_status 'question') Set certificate duration in hours (press Enter to skip and inherit CA expiration): " cert_gen_duration
+        [[ -z "$cert_gen_duration" ]] && break
+        [[ "$cert_gen_duration" =~ ^[0-9]+$ ]] && break
+        log_error "Please enter a whole number of hours (e.g., 720), or press Enter to skip."
+    done
+    CERT_DIR="$cert_dir" SIGN_NAME="$cert_gen_name" SIGN_IP="$cert_gen_ip" \
+        SIGN_GROUPS="$cert_gen_groups" SIGN_SUBNETS="$cert_gen_subnets" SIGN_DURATION_H="$cert_gen_duration" \
+        pki_sign
+}
+
+###################################################################
+########################## Cert inspection #########################
+###################################################################
+
+list_certs() {
+    local certs_dir; certs_dir="$(resolve_cert_dir)"
+    local rows=()
+    [[ -d "$certs_dir" ]] || { log_error "Certificates dir not found: $certs_dir"; return 1; }
+    local bin_path; bin_path="$(dirname "$(pki_cert_bin)")"
+
+    local cert
+    for cert in "$certs_dir"/*.crt; do
+        [[ -f "$cert" ]] || continue
+        local json n t i g s nb na fp
+        json=$(nebula_cert_json "$bin_path" "$cert")
+        n=$(jq -r '.details.name' <<<"$json")
+        t=$(jq -r '.details.isCa' <<<"$json"); t=$([[ $t == true ]] && echo "CA" || echo "Cert")
+        i=$(jq -r '.details.ips | join(", ")' <<<"$json"); [[ -z "$i" ]] && i="N/A"
+        g=$(jq -r '.details.groups | if length==0 then "None" else join(", ") end' <<<"$json")
+        s=$(jq -r '.details.subnets | if length==0 then "None" else join(", ") end' <<<"$json")
+        nb=$(jq -r '.details.notBefore' <<<"$json")
+        na=$(jq -r '.details.notAfter' <<<"$json")
+        fp=$(jq -r '.fingerprint' <<<"$json")
+        rows+=("$n|$t|$i|$g|$s|$nb|$na|$fp")
+    done
+
+    [[ ${#rows[@]} -eq 0 ]] && { log_warn "No certificates found in $certs_dir."; return; }
+    local sorted
+    IFS=$'\n' sorted=($(printf "%s\n" "${rows[@]}" | sort -t "|" -k6))
+
+    local border_len=158
+    printf "${CYAN}%${border_len}s${RESET}\n" | tr ' ' '-'
+    printf "${BOLD}${YELLOW} %-14s ${CYAN}|${YELLOW} %-4s ${CYAN}|${YELLOW} %-18s ${CYAN}|${YELLOW} %-18s ${CYAN}|${YELLOW} %-20s ${CYAN}|${YELLOW} %-20s ${CYAN}|${YELLOW} %-20s ${CYAN}|${YELLOW} %-16s ${RESET}\n" \
+        "Name" "Type" "IPs" "Groups" "Subnets" "Not Before" "Not After" "Fingerprint"
+    printf "${CYAN}%${border_len}s${RESET}\n" | tr ' ' '-'
+
+    local now; now=$(date -u +%s)
+    local row n t i g s nb na fp
+    for row in "${sorted[@]}"; do
+        IFS="|" read -r n t i g s nb na fp <<< "$row"
+        local epoch_nb epoch_na color_nb color_na
+        epoch_nb=$(date -d "$nb" +%s 2>/dev/null || echo 0)
+        epoch_na=$(date -d "$na" +%s 2>/dev/null || echo 0)
+        [[ $epoch_nb -le $now ]] && color_nb="${GREEN}" || color_nb="${WHITE}"
+        [[ $epoch_na -le $now ]] && color_na="${RED}" || color_na="${GREEN}"
+        printf " ${CYAN}%-14s${RESET} | ${ORANGE}%-4s${RESET} | ${GREEN}%-18s${RESET} | ${MAGENTA}%-18s${RESET} | ${YELLOW}%-20s${RESET} | ${color_nb}%-20s${RESET} | ${color_na}%-20s${RESET} | ${RED}%-16s${RESET}\n" \
+            "$(maxlen "$n" 14)" "$t" "$(maxlen "$i" 18)" "$(maxlen "$g" 18)" "$(maxlen "$s" 20)" "$nb" "$na" "$(maxlen "$fp" 20)"
+    done
+    printf "${CYAN}%${border_len}s${RESET}\n" | tr ' ' '-'
+}
+
+# list_certs_expiry [max_days]
+list_certs_expiry() {
+    local certs_dir; certs_dir="$(resolve_cert_dir)"
+    local max_days_filter="${1:-}" rows=()
+    [[ -d "$certs_dir" ]] || { log_error "Certificates dir not found: $certs_dir"; return 1; }
+    local bin_path; bin_path="$(dirname "$(pki_cert_bin)")"
+    local now; now=$(date -u +%s)
+    local cert
+    for cert in "$certs_dir"/*.crt; do
+        [[ -f "$cert" ]] || continue
+        local json; json=$(nebula_cert_json "$bin_path" "$cert") || continue
+        local name type na epoch_na days_left color
+        name=$(jq -r '.details.name' <<<"$json")
+        type=$(jq -r '.details.isCa'  <<<"$json"); type=$([[ $type == true ]] && echo "CA" || echo "Cert")
+        na=$(jq -r '.details.notAfter'  <<<"$json")
+        epoch_na=$(date -d "$na" +%s 2>/dev/null || echo 0)
+        days_left=$(( (epoch_na - now) / 86400 ))
+        (( days_left < 0 )) && days_left=0
+        if [[ -n "$max_days_filter" && "$max_days_filter" =~ ^[0-9]+$ ]]; then
+            (( days_left <= max_days_filter )) || continue
+        fi
+        if (( days_left > 365 )); then color="${GREEN}"
+        elif (( days_left >= 181 )); then color="${YELLOW}"
+        elif (( days_left >= 91 )); then color="${ORANGE}"
+        else color="${RED}"; fi
+        local years=$(( days_left / 365 )) rem=$(( days_left % 365 ))
+        local months=$(( rem / 30 )) days=$(( rem % 30 )) human=""
+        if (( years > 0 )); then human+="$years year$([[ $years -gt 1 ]] && echo "s")"; fi
+        if (( months > 0 )); then [[ -n "$human" ]] && human+=", "; human+="$months month$([[ $months -gt 1 ]] && echo "s")"; fi
+        if (( days > 0 )); then [[ -n "$human" ]] && human+=", and "; human+="$days day$([[ $days -gt 1 ]] && echo "s")"; fi
+        [[ -z "$human" ]] && human="Expired"
+        rows+=( "$(printf "%08d|%s|%s|%s|%s%s%s" "$days_left" "$name" "$type" "$na" "$color" "$human" "${RESET}")" )
+    done
+    [[ ${#rows[@]} -eq 0 ]] && { log_warn "No matching certificates found in $certs_dir."; return 0; }
+    local -a sorted
+    IFS=$'\n' read -r -d '' -a sorted < <(printf "%s\n" "${rows[@]}" | sort -t '|' -k1,1n && printf '\0')
+    local border_len=94
+    printf "${CYAN}%${border_len}s${RESET}\n" | tr ' ' '-'
+    printf "${BOLD}${YELLOW} %-22s ${CYAN}|${YELLOW} %-4s ${CYAN}|${YELLOW} %-24s ${CYAN}|${YELLOW} %-30s ${RESET}\n" \
+        "Name" "Type" "Not After (UTC)" "Expires In"
+    printf "${CYAN}%${border_len}s${RESET}\n" | tr ' ' '-'
+    local row
+    for row in "${sorted[@]}"; do
+        local _ name type na human
+        IFS='|' read -r _ name type na human <<<"$row"
+        printf " ${CYAN}%-22s${RESET} | ${ORANGE}%-4s${RESET} | ${WHITE}%-24s${RESET} | %b\n" \
+            "$(maxlen "$name" 22)" "$type" "$na" "$human"
+    done
+    printf "${CYAN}%${border_len}s${RESET}\n" | tr ' ' '-'
+}
+
+# Print details of a single certificate (or a cert + key + CA block, as before)
+view_cert_details() {
+    local certs_dir; certs_dir="$(resolve_cert_dir)"
+    local ca_cert_file cert_name cert_file key_file
+    ca_cert_file="$(find_ca_crt "$certs_dir" || true)"
+    [[ -d "$certs_dir" ]] || { log_error "Certificates directory $certs_dir does not exist."; return 1; }
+
+    local certs_list="" cert
+    for cert in "$certs_dir"/*.crt; do
+        [[ -f "$cert" ]] && certs_list+="${CYAN}$(basename "$cert" .crt)${RESET}, "
+    done
+    certs_list=${certs_list%, }
+    echo -e "    ${YELLOW}${BOLD}Certificates:${RESET} ${YELLOW}${certs_list}${RESET}"
+    read -p "$(show_status 'question') Enter the name of the certificate to view details: " cert_name
+    cert_file="$certs_dir/$cert_name.crt"
+    key_file="$certs_dir/$cert_name.key"
+
+    if [[ -f "$cert_file" ]]; then
+        echo -e "\n${BG_BLUE}${BOLD}${WHITE} CERTIFICATE — Copy from BEGIN to END ${RESET}"
+        echo -e "${YELLOW}File: ${BOLD}${cert_name}.crt${RESET}"
+        echo -e "${YELLOW}------------------------------------------------------------${RESET}"
+        cat "$cert_file"
+        echo -e "${YELLOW}------------------------------------------------------------${RESET}"
+    else
+        log_error "Missing certificate file: $cert_file"
+    fi
+    if [[ -f "$key_file" ]]; then
+        echo -e "\n${BG_RED}${BOLD}${WHITE} PRIVATE KEY — Copy from BEGIN to END ${RESET}"
+        echo -e "${YELLOW}File: ${BOLD}${cert_name}.key${RESET}"
+        echo -e "${YELLOW}------------------------------------------------------------${RESET}"
+        cat "$key_file"
+        echo -e "${YELLOW}------------------------------------------------------------${RESET}"
+    else
+        log_error "Missing key file: $key_file"
+    fi
+    if [[ -n "$ca_cert_file" && -f "$ca_cert_file" ]]; then
+        echo -e "\n${BG_GREEN}${BOLD}${WHITE} CA CERTIFICATE — Copy from BEGIN to END ${RESET}"
+        echo -e "${YELLOW}File: ca.crt${RESET}"
+        echo -e "${YELLOW}------------------------------------------------------------${RESET}"
+        cat "$ca_cert_file"
+        echo -e "${YELLOW}------------------------------------------------------------${RESET}"
+    else
+        log_warn "CA certificate (ca.crt) not found in $certs_dir."
+    fi
+}
+
+# remove_cert : interactive
+remove_cert() {
+    local certs_dir; certs_dir="$(resolve_cert_dir)"
+    local cert_name_remove certs="" cert
+    for cert in "$certs_dir"/*.crt; do
+        [[ -f "$cert" ]] && certs+="${CYAN}$(basename "$cert" .crt)${RESET}, "
+    done
+    certs=${certs%, }
+    echo -e "    $certs"
+    read -p "$(show_status 'question') Enter the name of the certificate to remove: " cert_name_remove
+    pki_remove "$cert_name_remove"
+}
+
+# pki_remove <name> [cert_dir]
+pki_remove() {
+    local name="$1" certs_dir="${2:-$(resolve_cert_dir)}"
+    local crt_file="$certs_dir/$name.crt" key_file="$certs_dir/$name.key"
+    if [[ -f "$crt_file" && -f "$key_file" ]]; then
+        rm -f "$crt_file" "$key_file" && log_success "Removed $crt_file and $key_file."
+    else
+        log_error "Certificate $name not found in $certs_dir"
+        return 1
+    fi
+}
+
+# revoke_cert : interactive (blocklist editing lives in config.yml)
+revoke_cert() {
+    local certs_dir config_file
+    certs_dir="$(resolve_cert_dir)"
+    config_file="${NEBULA_DIR:-/etc/nebula}/config.yml"
+    local bin_path; bin_path="$(dirname "$(pki_cert_bin)")"
+
+    echo -e "$(show_status 'info') ${YELLOW}Current Revoked Certificates:${RESET}"
+    local in_blocklist=false i=0 line
+    while IFS= read -r line; do
+        [[ "$line" =~ ^[[:space:]]*blocklist: ]] && in_blocklist=true && continue
+        [[ "$in_blocklist" == true && ! "$line" =~ ^[[:space:]]*-[[:space:]] ]] && in_blocklist=false
+        if [[ "$in_blocklist" == true && "$line" =~ -[[:space:]]+([^#[:space:]]+)[[:space:]]*(#.*)?$ ]]; then
+            local fp="${BASH_REMATCH[1]}" reason="${BASH_REMATCH[2]}" cert
+            [[ $reason =~ ^[[:space:]]*#[[:space:]]*(.*)$ ]] && reason="${BASH_REMATCH[1]}"
+            local match="Unknown cert name"
+            for cert in "$certs_dir"/*.crt.revoked; do
+                [[ -f "$cert" ]] || continue
+                local cert_fp; cert_fp=$(nebula_cert_json "$bin_path" "$cert" | jq -r '.fingerprint')
+                [[ "$cert_fp" == "$fp" ]] && match=$(basename "$cert" .crt.revoked) && break
+            done
+            echo -e "    ${YELLOW}[$(($i+1))]${RESET} ${CYAN}$fp${RESET} - $match${reason:+ (${MAGENTA}$reason${RESET})}"
+            ((i++))
+        fi
+    done < "$config_file"
+    (( i == 0 )) && printf "%b\n" "    ${ORANGE}No revoked fingerprints found in blocklist.${RESET}"
+
+    local action="" cert_name_or_fingerprint fingerprint cert_file cert_key revoke_choice revoke_by_name=true
+    while :; do
+        echo -ne "\n$(show_status 'question') What would you like to do? [${YELLOW}a${RESET}]dd / [${YELLOW}r${RESET}]emove / [${YELLOW}b${RESET}]ack: "
+        read -r action
+        case "${action,,}" in
+            a|add|1)    action="add";    break ;;
+            r|remove|2) action="remove"; break ;;
+            b|back|q|0) log_info "Returning to previous menu."; return ;;
+            *) log_error "Invalid choice. Please type a/r/b." ;;
+        esac
+    done
+
+    if [[ "$action" == "remove" ]]; then
+        echo -ne "$(show_status 'question') Enter fingerprint to remove from revocation list: "
+        read -r fingerprint
+        [[ -z "$fingerprint" ]] && { log_error "No fingerprint provided."; return; }
+        sed -i "/- $fingerprint/d" "$config_file"
+        log_success "Removed fingerprint ${CYAN}$fingerprint${GREEN} from blocklist."
+        local cert
+        for cert in "$certs_dir"/*.crt.revoked; do
+            [[ -f "$cert" ]] || continue
+            local cert_fp; cert_fp=$(nebula_cert_json "$bin_path" "$cert" | jq -r '.fingerprint')
+            if [[ "$cert_fp" == "$fingerprint" ]]; then
+                local base="${cert%.crt.revoked}"
+                mv "$cert" "${base}.crt"
+                [[ -f "${base}.key.revoked" ]] && mv "${base}.key.revoked" "${base}.key"
+                log_info "Restored certificate: $(basename "$base")"
+                break
+            fi
+        done
+        read -p "$(show_status 'question') Reload Nebula service to apply changes? (y/n): " reload_choice
+        [[ "$reload_choice" == "y" ]] && elevate systemctl reload "$(basename "${NEBULA_SERVICE:-nebula.service}")" \
+            && log_success "Nebula service reloaded."
+        return
+    fi
+
+    while [[ "$revoke_choice" != "1" && "$revoke_choice" != "2" ]]; do
+        echo -ne "$(show_status 'question') Revoke by certificate name (${YELLOW}1${RESET}) or fingerprint (${YELLOW}2${RESET})?: "
+        read -r revoke_choice
+    done
+    if [[ "$revoke_choice" == "1" ]]; then
+        echo -e "    ${YELLOW}${BOLD}Certificates:${RESET}"
+        local cert
+        for cert in "$certs_dir"/*.crt; do
+            [[ -f "$cert" ]] && echo "      - $(basename "$cert" .crt)"
+        done
+        read -p "$(show_status 'question') Enter the certificate name to revoke: " cert_name_or_fingerprint
+        cert_file="${certs_dir}/$cert_name_or_fingerprint.crt"
+        cert_key="${certs_dir}/$cert_name_or_fingerprint.key"
+        if [[ ! -f "$cert_file" || ! -f "$cert_key" ]]; then
+            log_error "Certificate not found: $cert_name_or_fingerprint"; return
+        fi
+        fingerprint=$(nebula_cert_json "$bin_path" "$cert_file" | jq -r '.fingerprint')
+    else
+        read -p "$(show_status 'question') Enter the full certificate fingerprint to revoke: " fingerprint
+        revoke_by_name=false
+    fi
+    if grep -q "$fingerprint" "$config_file"; then
+        log_info "Fingerprint already revoked: ${CYAN}$fingerprint${RESET}"; return
+    fi
+    local reason
+    read -p "$(show_status 'question') Enter a reason for revocation: " reason
+    if [[ "$revoke_by_name" == true ]]; then
+        mv "$cert_file" "$cert_file.revoked"
+        mv "$cert_key" "$cert_key.revoked"
+    fi
+    sed -i "/^ *blocklist:/a \ \ \ \ - $fingerprint # $reason" "$config_file"
+    log_success "Added fingerprint ${CYAN}$fingerprint${GREEN} to blocklist with reason: ${MAGENTA}$reason${RESET}"
+    local reload_choice
+    read -p "$(show_status 'question') Reload Nebula service to apply changes? (y/n): " reload_choice
+    [[ "$reload_choice" == "y" ]] && elevate systemctl reload "$(basename "${NEBULA_SERVICE:-nebula.service}")" \
+        && log_success "Nebula service reloaded."
+}
+
+###################################################################
+######################### Client bundling ##########################
+###################################################################
+
+# Write a minimal, ready-to-edit nebula config template for a client bundle.
+pki_write_client_config() {
+    local outfile="$1" name="$2"
+    cat > "$outfile" <<EOF
+# Nebula client configuration for '$name'
+# Generated by nebula-manager. Adjust static_host_map / lighthouse.hosts
+# for your network, then place the referenced files on the client.
+pki:
+  ca: /etc/nebula/ca.crt
+  cert: /etc/nebula/$name.crt
+  key: /etc/nebula/$name.key
+
+static_host_map:
+  # "10.42.0.1": ["203.0.113.10:4242"]
+
+lighthouse:
+  am_lighthouse: false
+  interval: 60
+  hosts:
+    # - "10.42.0.1"
+
+listen:
+  host: 0.0.0.0
+  port: 4242
+
+punchy:
+  punch: true
+
+tun:
+  dev: nebula1
+EOF
+}
+
+# pki_bundle_client_zip <name> [out_dir] [cert_dir]
+# Produces <name>-nebula-bundle.zip containing cert, key, ca.crt and a
+# config template. Runs entirely unprivileged.
+pki_bundle_client_zip() {
+    local name="${1:?client name required}"
+    local out_dir="${2:-$PWD}"
+    local cert_dir="${3:-$(resolve_cert_dir)}"
+    local crt="$cert_dir/$name.crt" key="$cert_dir/$name.key"
+    local ca; ca="$(find_ca_crt "$cert_dir" || true)"
+
+    [[ -f "$crt" ]] || { log_error "Certificate not found: $crt"; return 1; }
+    [[ -f "$key" ]] || { log_error "Key not found: $key"; return 1; }
+    [[ -n "$ca" && -f "$ca" ]] || { log_error "CA certificate not found for $name"; return 1; }
+
+    ensure_dir "$out_dir" || return 1
+    local tmp; tmp="$(mktemp -d)"
+    cp "$crt" "$tmp/$name.crt"
+    cp "$key" "$tmp/$name.key"
+    cp "$ca"  "$tmp/ca.crt"
+    pki_write_client_config "$tmp/config.yml.template" "$name"
+
+    local zipfile="$out_dir/${name}-nebula-bundle.zip"
+    rm -f "$zipfile"
+    if command -v zip >/dev/null 2>&1; then
+        ( cd "$tmp" && zip -q "$zipfile" "$name.crt" "$name.key" ca.crt config.yml.template ) \
+            || { log_error "Failed to create zip bundle."; rm -rf "$tmp"; return 1; }
+    else
+        local tarball="$out_dir/${name}-nebula-bundle.tar.gz"
+        ( cd "$tmp" && tar -czf "$tarball" "$name.crt" "$name.key" ca.crt config.yml.template ) \
+            || { log_error "Failed to create tar bundle."; rm -rf "$tmp"; return 1; }
+        rm -rf "$tmp"
+        log_warn "zip not found; wrote $tarball instead."
+        printf '%s\n' "$tarball"
+        return 0
+    fi
+    rm -rf "$tmp"
+    log_success "Client bundle created: $zipfile"
+    printf '%s\n' "$zipfile"
+}
+
+###################################################################
+########################### Menus / CLI ############################
+###################################################################
+
+manage_nebula_certs() {
+    ensure_cert_dir >/dev/null || return 1
+    dynamic_menu_title=("$MENU_PATH" "Certificate Management")
+    dynamic_menu_options=(
+        "$(get_icon 'list')List Certificates"
+        "$(get_icon 'create')Generate CA Certificate"
+        "$(get_icon 'create')Generate Client Certificate"
+        "$(get_icon 'inspect')View Certificate and Key Details"
+        "$(get_icon 'hour-glass')Certificate Expiry"
+        "$(get_icon 'upload')Bundle Client Zip"
+        "$(get_icon 'revoke')Revoke Certificate"
+        "$(get_icon 'keys')Switch Certificate Workspace"
+        "$(get_icon 'error')Remove Certificate"
+    )
+    dynamic_menu_functions=(
+        "list_certs"
+        "generate_nebula_ca"
+        "generate_nebula_cert"
+        "view_cert_details"
+        "list_certs_expiry"
+        "pki_bundle_client_menu"
+        "revoke_cert"
+        "select_cert_workspace"
+        "remove_cert"
+    )
+    dynamic_menu dynamic_menu_title dynamic_menu_options dynamic_menu_functions 1
+}
+
+pki_bundle_client_menu() {
+    local name out default_out
+    read -p "$(show_status 'question') Client certificate name to bundle: " name
+    [[ -z "$name" ]] && return
+    default_out="$PWD"
+    out="$(ui_input "Bundle Client" "Output directory:" "$default_out")" || return
+    pki_bundle_client_zip "$name" "${out:-$default_out}"
+}
+
+# --- Headless CLI --------------------------------------------------
+
+pki_cli() {
+    local sub="${1:-list}"; shift || true
+    case "$sub" in
+        list)   list_certs ;;
+        expiry) list_certs_expiry "${1:-}" ;;
+        remove|rm) pki_remove "${1:?certificate name required}" ;;
+        bundle)
+            local name="${1:?client name required}"; shift || true
+            pki_bundle_client_zip "$name" "${1:-$PWD}"
+            ;;
+        workspace)
+            select_cert_workspace ;;
+        *) log_error "Unknown 'cert' subcommand: $sub"; return 2 ;;
+    esac
+}
+
+pki_ca_cli() {
+    # Entry already stripped the 'ca' command; an optional create/init verb may follow.
+    [[ "${1:-}" == "create" || "${1:-}" == "init" ]] && shift
+    local name="" duration="" groups="" ips="" subnets="" encrypt="n" cert_dir=""
+    while (($#)); do
+        case "$1" in
+            --name|-n) shift; name="$1" ;;
+            --duration|-d) shift; duration="$1" ;;
+            --groups|-g) shift; groups="$1" ;;
+            --ips|-i) shift; ips="$1" ;;
+            --subnets|-s) shift; subnets="$1" ;;
+            --encrypt) encrypt="y" ;;
+            --cert-dir) shift; cert_dir="$1" ;;
+            *) log_warn "Ignoring unknown option for 'ca': $1" ;;
+        esac
+        shift
+    done
+    [[ -z "$name" ]] && { echo "Usage: nebula-manager ca [create] --name NAME [--duration 999999h] [--groups a,b] [--ips CIDR] [--subnets CIDR] [--encrypt] [--cert-dir DIR]" >&2; return 2; }
+    CERT_DIR="${cert_dir:-$(resolve_cert_dir)}" CA_NAME="$name" CA_DURATION="${duration:-999999h}" \
+        CA_GROUPS="$groups" CA_IPS="$ips" CA_SUBNETS="$subnets" CA_ENCRYPT="$encrypt" \
+        pki_ca_create
+}
+
+pki_sign_cli() {
+    local name="" ip="" groups="" subnets="" duration="" cert_dir=""
+    while (($#)); do
+        case "$1" in
+            --name|-n) shift; name="$1" ;;
+            --ip|-i) shift; ip="$1" ;;
+            --groups|-g) shift; groups="$1" ;;
+            --subnets|-s) shift; subnets="$1" ;;
+            --duration|-d) shift; duration="$1" ;;
+            --cert-dir) shift; cert_dir="$1" ;;
+            --) shift; break ;;
+            *)
+                if [[ -z "$name" ]]; then name="$1"
+                elif [[ -z "$ip" ]]; then ip="$1"
+                else log_warn "Ignoring extra argument: $1"; fi
+                ;;
+        esac
+        shift
+    done
+    if [[ -z "$name" || -z "$ip" ]]; then
+        echo "Usage: nebula-manager sign --name NAME --ip CIDR [--groups a,b] [--subnets CIDR] [--duration HOURS] [--cert-dir DIR]" >&2
+        return 2
+    fi
+    # strip a trailing 'h' from duration if the user supplied one
+    duration="${duration%h}"
+    CERT_DIR="${cert_dir:-$(resolve_cert_dir)}" SIGN_NAME="$name" SIGN_IP="$ip" \
+        SIGN_GROUPS="$groups" SIGN_SUBNETS="$subnets" SIGN_DURATION_H="$duration" \
+        pki_sign
+}

@@ -1,0 +1,227 @@
+#!/usr/bin/env bash
+#
+# nebula-manager - least-privilege installer/operator for Slack Nebula
+# ===================================================================
+# Runs as an ordinary user and calls sudo only for the specific actions
+# that genuinely need root (writing /etc/nebula, systemd control, ...).
+#
+#   nebula-manager                       interactive TUI
+#   nebula-manager --help                usage
+#   nebula-manager ca --name acme        create a CA (unprivileged)
+#   nebula-manager sign --name host1 --ip 10.42.0.2/24
+#   nebula-manager cert list | expiry | bundle <name>
+#   nebula-manager bench server|client ...
+#   nebula-manager diag                  diagnostics viewer
+#   nebula-manager paths                 show resolved config/keys dirs
+#
+# See README.md for full usage.
+
+set -o pipefail
+
+###################################################################
+########################## Configuration ##########################
+###################################################################
+MANAGER_VERSION="2.0.0"
+SERVER_CONF="${SERVER_CONF:-/etc/nebula/nebula-manager.conf}"   # Nebula Manager conf file
+SERVER_CONF_URL="https://raw.githubusercontent.com/jordanhillis/nebula-manager/refs/heads/main/nebula-manager.conf"
+NEBULA_TEMPLATE_URL="https://raw.githubusercontent.com/slackhq/nebula/refs/heads/master/examples/config.yml"
+NEBULA_API_RELEASES_URL="https://api.github.com/repos/slackhq/nebula/releases/latest"
+MENU_PATH="Main Menu"
+SCRIPT_URL="https://raw.githubusercontent.com/jordanhillis/nebula-manager/main/nebula-manager"
+VERSION_URL="https://raw.githubusercontent.com/jordanhillis/nebula-manager/main/latest_version.txt"
+RELEASE_PAGE="https://github.com/jordanhillis/nebula-manager"
+VERSION_CACHE_FILE="/tmp/nebula-manager-version.cache"
+VERSION_CACHE_TTL_SECONDS=$((6 * 3600))
+MANAGER_ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+AUTO_UPDATE_CMD="$SCRIPT_PATH --auto-update-nebula"
+CRON_COMMENT="# Auto-update Nebula"
+
+# Runtime defaults (overridable by nebula-manager.conf [global])
+: "${NEBULA_BIN_PATH:=/usr/local/bin}"
+: "${NEBULA_CERT_FOLDER:=certs}"
+: "${USE_COLOR:=true}"
+: "${USE_ICONS:=true}"
+# Fallback Nebula listen port (used when config.yml has `listen.port: 0`).
+: "${NEBULA_DEFAULT_PORT:=4242}"
+
+###################################################################
+########################## Load modules ############################
+###################################################################
+resolve_lib_dir() {
+    if [[ -n "${NEBULA_MANAGER_LIB:-}" && -d "${NEBULA_MANAGER_LIB}" ]]; then
+        printf '%s\n' "$NEBULA_MANAGER_LIB"; return 0
+    fi
+    local d
+    for d in \
+        "$MANAGER_ROOT/lib" \
+        "${NEBULA_MANAGER_LIB_BASE:+$NEBULA_MANAGER_LIB_BASE/lib}" \
+        /usr/local/lib/nebula-manager/lib \
+        /usr/lib/nebula-manager/lib \
+        /usr/local/share/nebula-manager/lib
+    do
+        [[ -n "$d" && -d "$d" ]] && { printf '%s\n' "$d"; return 0; }
+    done
+    printf '%s\n' "$MANAGER_ROOT/lib"
+}
+
+MANAGER_LIB_DIR="$(resolve_lib_dir)"
+for _mod in ui pki bench system; do
+    if [[ -r "$MANAGER_LIB_DIR/$_mod.sh" ]]; then
+        # shellcheck source=/dev/null
+        source "$MANAGER_LIB_DIR/$_mod.sh"
+    else
+        echo "nebula-manager: missing module: $MANAGER_LIB_DIR/$_mod.sh" >&2
+        exit 1
+    fi
+done
+unset _mod
+
+###################################################################
+############################## TUI #################################
+###################################################################
+
+top_header() {
+    echo -e "$(show_status 'success') ${BOLD}${YELLOW}Server:${RESET} \e[38;5;$(hash_color_256 "$SERVER_NAME")m$SERVER_NAME${RESET}"
+    if check_nebula_installed; then
+        LATEST_VERSION=$(get_latest_version)
+        echo -e "$(show_status 'success') ${BOLD}${YELLOW}Nebula:${RESET} v$NEBULA_VERSION$([ "$NEBULA_VERSION" != "$LATEST_VERSION" ] && echo -e "${GREEN} ➜ ${RED}Update Available:${RESET} v$LATEST_VERSION${RESET}" || echo -e " ${GREEN}(Up to date)${RESET}")"
+        if [[ "$NEBULA_VERSION" != "$LATEST_VERSION" && "${IGNORE_NEBULA_UPDATE:-}" != "true" ]]; then
+            check_for_nebula_update
+        fi
+        show_system_info
+    else
+        echo -e "$(show_status 'error') Nebula not installed..."
+    fi
+}
+
+nebula_maintenance() {
+    dynamic_menu_title=("$MENU_PATH" "Maintenance")
+    dynamic_menu_options=("$(get_icon 'start')Toggle Nebula Service" "$(get_icon 'download')Update Nebula" "$(get_icon 'schedule')Auto-Update Scheduler" "$(get_icon 'install')Install Script to System" "$(get_icon 'uninstall')${ORANGE}Remove Nebula${RESET}")
+    dynamic_menu_functions=("toggle_nebula_service" "check_for_nebula_update" "auto_update_cron_menu" "ensure_installed_to_bin_path" "remove_nebula")
+    dynamic_menu dynamic_menu_title dynamic_menu_options dynamic_menu_functions 1
+}
+
+main_menu() {
+    if check_nebula_installed; then
+        if ! check_nebula_service; then
+            setup_nebula_service
+        fi
+        if [ ! -f "${NEBULA_DIR}/config.yml" ]; then
+            setup_nebula_config
+        fi
+        menu_options=("$(get_icon 'certificate')Certificates" "$(get_icon 'configuration')Configuration" "$(get_icon 'connectivity')Connectivity" "$(get_icon 'bench')Benchmarks" "$(get_icon 'maintenance')Maintenance" "$(get_icon 'exit')${BOLD}Exit${RESET}")
+        menu_option_functions=("manage_nebula_certs" "manage_configuration" "check_node_connectivity" "run_benchmark" "nebula_maintenance" "exit")
+    else
+        menu_options=("$(get_icon 'install')Install Nebula" "$(get_icon 'exit')${BOLD}Exit${RESET}")
+        menu_option_functions=("install_nebula" "exit")
+    fi
+    menu_title=("$MENU_PATH")
+    dynamic_menu menu_title menu_options menu_option_functions 0
+}
+
+tui_main() {
+    rm -f /tmp/nebula_failed_*
+    clear
+    load_global_config
+    check_dependencies || exit 1
+    banner
+    check_script_update
+    select_nebula_server
+    banner
+    top_header
+    main_menu
+}
+
+###################################################################
+############################# CLI #################################
+###################################################################
+
+usage() {
+    cat <<EOF
+Nebula Manager v$MANAGER_VERSION
+
+Usage: nebula-manager [global options] [command] [command options]
+
+Runs as a normal user; sudo is requested only for privileged actions.
+
+Global options:
+  --config <path>       Path to nebula-manager.conf   (default: $SERVER_CONF)
+  --cert-dir <path>     Certificate workspace directory (overrides everything)
+  --ui <backend>        UI backend: auto|plain|whiptail|dialog
+  --no-color            Disable colored output
+  -v, --version         Print version
+  -h, --help            Show this help
+
+Commands:
+  (none)                          Interactive TUI
+  ca [create] --name NAME [...]   Create a certificate authority (unprivileged)
+  sign --name N --ip CIDR [...]   Sign a client certificate (unprivileged)
+  cert list|expiry|remove|bundle  Certificate operations
+  bench server|client [...]       iperf3 benchmarks
+  diag                            Diagnostics (TUN IP, UDP socket, cert expiry)
+  paths                           Print resolved config & key directories
+  auto-update                     Update Nebula to the latest release
+
+Environment:
+  NEBULA_KEYS_DIR      Certificate workspace (2nd precedence, after --cert-dir)
+  NEBULA_MANAGER_LIB   Override the lib/ directory location
+  NEBULA_UI            UI backend override
+EOF
+}
+
+print_paths() {
+    printf 'config:    %s\n' "$SERVER_CONF"
+    printf 'cert-dir:  %s\n' "$(resolve_cert_dir)"
+    printf 'bin-path:  %s\n' "$NEBULA_BIN_PATH"
+    printf 'lib-dir:   %s\n' "$MANAGER_LIB_DIR"
+}
+
+# Consume global flags, leaving the (sub)command + its args in REMAINING_ARGS.
+REMAINING_ARGS=()
+parse_global_flags() {
+    while (($#)); do
+        case "$1" in
+            --config=*)     SERVER_CONF="${1#*=}" ;;
+            --config)       shift; SERVER_CONF="${1:-}" ;;
+            --cert-dir=*)   CERT_DIR_OVERRIDE="${1#*=}" ;;
+            --cert-dir)     shift; CERT_DIR_OVERRIDE="${1:-}" ;;
+            --keys-dir=*)   NEBULA_KEYS_DIR="${1#*=}" ;;
+            --keys-dir)     shift; NEBULA_KEYS_DIR="${1:-}" ;;
+            --ui=*)         NEBULA_UI="${1#*=}" ;;
+            --ui)           shift; NEBULA_UI="${1:-}" ;;
+            --no-color)     USE_COLOR=false ;;
+            --auto-update-nebula) REMAINING_ARGS+=("auto-update") ;;
+            *)              REMAINING_ARGS+=("$1") ;;
+        esac
+        shift
+    done
+}
+
+main() {
+    parse_global_flags "$@"
+    set -- ${REMAINING_ARGS[@]+"${REMAINING_ARGS[@]}"}
+    local cmd="${1:-}"
+
+    case "$cmd" in
+        "" )            tui_main ;;
+        -h|--help|help) usage ;;
+        -v|--version|version) echo "Nebula Manager v${MANAGER_VERSION}" ;;
+        paths)          print_paths ;;
+        ca)             shift; pki_ca_cli "$@" ;;
+        sign)           shift; pki_sign_cli "$@" ;;
+        cert|pki)       shift; pki_cli "$@" ;;
+        bench)          shift; bench_cli "$@" ;;
+        diag|diagnose)  shift; diag_cli "$@" ;;
+        auto-update)
+            load_global_config
+            AUTO_UPDATE=true
+            banner
+            check_nebula_installed
+            auto_update_nebula
+            ;;
+        *) echo "nebula-manager: unknown command '$cmd'" >&2; usage >&2; exit 2 ;;
+    esac
+}
+
+main "$@"
