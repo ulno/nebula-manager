@@ -358,13 +358,123 @@ generate_nebula_ca() {
         pki_ca_create
 }
 
+# --- suggestions for new client certs ----------------------------------------
+
+# _ip4_to_int / _int_to_ip4 : small helpers for address arithmetic.
+_ip4_to_int() {
+    local IFS=.; local -a o=($1)
+    printf '%s' "$(( (${o[0]:-0}<<24) | (${o[1]:-0}<<16) | (${o[2]:-0}<<8) | ${o[3]:-0} ))"
+}
+_int_to_ip4() {
+    local n="$1"
+    printf '%s.%s.%s.%s' "$(( (n>>24)&255 ))" "$(( (n>>16)&255 ))" "$(( (n>>8)&255 ))" "$(( n&255 ))"
+}
+
+# cert_domain_suffix <cert_dir> : the most common ".domain" suffix among existing
+# non-CA cert names (e.g. ".ulno.mesh" from ulno-framework.ulno.mesh, vps.ulno.mesh).
+cert_domain_suffix() {
+    local cert_dir="$1" bin bp
+    bin="$(pki_cert_bin 2>/dev/null)" || return 0
+    bp="$(dirname "$bin")"
+    local -A counts=() cert json name dom
+    for cert in "$cert_dir"/*.crt; do
+        [[ -f "$cert" ]] || continue
+        json="$(nebula_cert_json "$bp" "$cert" 2>/dev/null)" || continue
+        [[ "$(jq -r '.details.isCa // false' <<<"$json" 2>/dev/null)" == "true" ]] && continue
+        name="$(jq -r '.details.name // ""' <<<"$json" 2>/dev/null)"
+        [[ "$name" == *.* ]] || continue
+        dom=".${name#*.}"
+        counts["$dom"]=$(( ${counts["$dom"]:-0} + 1 ))
+    done
+    local best="" bestn=0 k
+    for k in "${!counts[@]}"; do
+        (( ${counts["$k"]} > bestn )) && { best="$k"; bestn="${counts[$k]}"; }
+    done
+    [[ -n "$best" ]] && printf '%s' "$best"
+    return 0
+}
+
+# suggest_cert_name <cert_dir> : "<short-hostname><domain>" (e.g. host.ulno.mesh).
+suggest_cert_name() {
+    local cert_dir="$1" host dom
+    # `hostname` is not always installed; fall back to /etc/hostname, then $HOSTNAME.
+    host="$(hostname -s 2>/dev/null || true)"
+    [[ -n "$host" ]] || host="$(head -n1 /etc/hostname 2>/dev/null || true)"
+    [[ -n "$host" ]] || host="${HOSTNAME:-}"
+    host="${host%%.*}"                 # keep only the short name
+    [[ -n "$host" ]] || return 0
+    dom="$(cert_domain_suffix "$cert_dir")"
+    printf '%s%s' "$host" "$dom"
+}
+
+# suggest_next_cert_ip <cert_dir> : "<ip>/<prefix>" - the next free host address
+# in the overlay network used by most existing certs. Prints nothing if unknown.
+suggest_next_cert_ip() {
+    local cert_dir="$1" bin bp
+    bin="$(pki_cert_bin 2>/dev/null)" || return 0
+    bp="$(dirname "$bin")"
+    local -a entries=()
+    local cert json ip
+    for cert in "$cert_dir"/*.crt; do
+        [[ -f "$cert" ]] || continue
+        json="$(nebula_cert_json "$bp" "$cert" 2>/dev/null)" || continue
+        while IFS= read -r ip; do
+            [[ -n "$ip" ]] && entries+=("$ip")
+        done < <(jq -r '.details.ips[]? // empty' <<<"$json" 2>/dev/null)
+    done
+    (( ${#entries[@]} )) || return 0
+
+    # Group addresses by their network ("/prefix") and pick the most-used one.
+    local -A netcount=() used=()
+    local addr prefix ipint mask net e
+    for e in "${entries[@]}"; do
+        addr="${e%%/*}"; prefix="${e#*/}"
+        [[ "$prefix" == "$e" ]] && prefix=24
+        [[ "$prefix" =~ ^[0-9]+$ ]] || prefix=24
+        ipint="$(_ip4_to_int "$addr")"
+        mask=$(( prefix == 0 ? 0 : (0xFFFFFFFF << (32-prefix)) & 0xFFFFFFFF ))
+        net=$(( ipint & mask ))
+        netcount["${net}/${prefix}"]=$(( ${netcount["${net}/${prefix}"]:-0} + 1 ))
+    done
+    local best="" bestn=0 k
+    for k in "${!netcount[@]}"; do
+        (( ${netcount["$k"]} > bestn )) && { best="$k"; bestn="${netcount[$k]}"; }
+    done
+    [[ -n "$best" ]] || return 0
+    net="${best%%/*}"; prefix="${best#*/}"
+    mask=$(( prefix == 0 ? 0 : (0xFFFFFFFF << (32-prefix)) & 0xFFFFFFFF ))
+    local hostcount=$(( 2 ** (32-prefix) ))
+    (( hostcount > 65536 )) && return 0     # too large to scan for a free slot
+
+    used["$net"]=1
+    (( prefix > 0 && prefix <= 30 )) && used[$(( net | (0xFFFFFFFF >> prefix) ))]=1   # broadcast
+    for e in "${entries[@]}"; do
+        addr="${e%%/*}"; ipint="$(_ip4_to_int "$addr")"
+        (( (ipint & mask) == net )) && used["$ipint"]=1
+    done
+    local i cand
+    for (( i=1; i<hostcount-1; i++ )); do
+        cand=$(( net + i ))
+        [[ -n "${used[$cand]:-}" ]] && continue
+        printf '%s/%s' "$(_int_to_ip4 "$cand")" "$prefix"
+        return 0
+    done
+    return 0
+}
+
 # Interactive cert signing (TUI wrapper)
 generate_nebula_cert() {
     local cert_dir; cert_dir="$(resolve_cert_dir)"
     local cert_gen_name cert_gen_ip cert_gen_groups include_subnets_choice cert_gen_subnets cert_gen_duration
     ensure_dir "$cert_dir" || { log_error "Failed to create $cert_dir."; return 1; }
 
-    while [[ -z "$cert_gen_name" ]]; do read -p "$(show_status 'question') Enter the certificate name: " cert_gen_name; done
+    local suggested_name; suggested_name="$(suggest_cert_name "$cert_dir")"
+    local name_prompt="Enter the certificate name: "
+    [[ -n "$suggested_name" ]] && name_prompt="Enter the certificate name [${suggested_name}]: "
+    while [[ -z "$cert_gen_name" ]]; do
+        read -p "$(show_status 'question') $name_prompt" cert_gen_name
+        [[ -z "$cert_gen_name" && -n "$suggested_name" ]] && cert_gen_name="$suggested_name"
+    done
 
     if [[ -f "$cert_dir/$cert_gen_name.crt" ]]; then
         log_info "Certificate $cert_gen_name already exists in $cert_dir"
@@ -373,8 +483,12 @@ generate_nebula_cert() {
         [[ "$overwrite_choice" != "y" ]] && { log_info "Certificate generation aborted."; return; }
     fi
 
+    local suggested_ip; suggested_ip="$(suggest_next_cert_ip "$cert_dir")"
     while true; do
-        read -p "$(show_status 'question') Enter the IP address (e.g., 192.168.222.16/24): " cert_gen_ip
+        local ip_prompt="Enter the IP address (e.g., 192.168.222.16/24): "
+        [[ -n "$suggested_ip" ]] && ip_prompt="Enter the IP address [${suggested_ip}]: "
+        read -p "$(show_status 'question') $ip_prompt" cert_gen_ip
+        [[ -z "$cert_gen_ip" && -n "$suggested_ip" ]] && cert_gen_ip="$suggested_ip"
         if [[ "$cert_gen_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}(/([0-9]|[1-2][0-9]|3[0-2]))?$ ]]; then
             [[ "$cert_gen_ip" =~ / ]] || cert_gen_ip="${cert_gen_ip}/24"
             local ip_taken=false
@@ -859,13 +973,28 @@ pki_sign_cli() {
         esac
         shift
     done
+    cert_dir="${cert_dir:-$(resolve_cert_dir)}"
+
+    # Fill missing values from suggestions derived from the existing certs, so
+    # `nebula-manager sign` alone does the sensible thing (name = <host><domain>,
+    # ip = next free overlay address). Explicit flags always win.
+    if [[ -z "$name" ]]; then
+        name="$(suggest_cert_name "$cert_dir")"
+        [[ -n "$name" ]] && log_info "Using suggested name: ${CYAN}$name${RESET}"
+    fi
+    if [[ -z "$ip" ]]; then
+        ip="$(suggest_next_cert_ip "$cert_dir")"
+        [[ -n "$ip" ]] && log_info "Using suggested IP: ${CYAN}$ip${RESET}"
+    fi
+
     if [[ -z "$name" || -z "$ip" ]]; then
-        echo "Usage: nebula-manager sign --name NAME --ip CIDR [--groups a,b] [--subnets CIDR] [--duration HOURS] [--cert-dir DIR]" >&2
+        echo "Usage: nebula-manager sign [--name NAME] [--ip CIDR] [--groups a,b] [--subnets CIDR] [--duration HOURS] [--cert-dir DIR]" >&2
+        log_error "Could not derive a certificate name/IP automatically; pass --name and/or --ip."
         return 2
     fi
     # strip a trailing 'h' from duration if the user supplied one
     duration="${duration%h}"
-    CERT_DIR="${cert_dir:-$(resolve_cert_dir)}" SIGN_NAME="$name" SIGN_IP="$ip" \
+    CERT_DIR="$cert_dir" SIGN_NAME="$name" SIGN_IP="$ip" \
         SIGN_GROUPS="$groups" SIGN_SUBNETS="$subnets" SIGN_DURATION_H="$duration" \
         pki_sign
 }

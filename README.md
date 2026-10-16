@@ -149,6 +149,27 @@ All PKI lives in a **certificate workspace** (a directory containing
 `ca.crt`, `ca.key`, `<name>.crt`, `<name>.key`). Workspaces are ordinary
 directories — keep them user-owned and no privilege is ever needed.
 
+### Generating a client certificate
+
+**Certificates ▸ Generate Client Certificate** (or `nebula-manager sign …`) walks
+you through a name, IP, groups and optional subnets/duration. The name and IP
+prompts come with **suggestions derived from the existing certs**:
+
+- **name** — `<this-host-short-name><mesh-domain>`, where the domain is the most
+  common suffix among existing cert names (e.g. `ulno-framework.ulno.mesh` when
+  your certs are `vps.ulno.mesh`, `ulno-ge75.ulno.mesh`, …);
+- **IP** — the **next free /24 host** in the overlay network used by most of your
+  certs (e.g. `10.100.0.1`, `.2`, `.3` present → `10.100.0.4/24`).
+
+Press Enter to accept a suggestion or type your own. The name is a free-form
+label (Nebula does not require the domain), but keeping the `.mesh` suffix
+matches the convention the rest of your certs follow.
+
+```
+[?] Enter the certificate name [ulno-framework.ulno.mesh]:
+[?] Enter the IP address [10.100.0.4/24]:
+```
+
 ### Resolution precedence
 
 1. `--cert-dir <path>` (CLI flag — highest priority)
@@ -240,6 +261,7 @@ file/directory browsing automatically uses `whiptail` when it is installed.
 # Certificates               (TUI: Certificates)
 ./nebula-manager ca --name my-ca --duration 999999h --cert-dir ~/keys/nebula
 ./nebula-manager sign --name host1 --ip 10.42.0.2/24 --groups servers --cert-dir ~/keys/nebula
+./nebula-manager sign --cert-dir ~/keys/nebula   # name+IP auto-suggested from existing certs
 ./nebula-manager cert list
 ./nebula-manager cert expiry 30         # certs expiring within 30 days
 ./nebula-manager cert bundle host1 ./bundles
@@ -432,6 +454,7 @@ What it covers:
 | Test | Verifies |
 |---|---|
 | `tests/test_pki_unprivileged.sh` | CA + cert signing + bundling work with **no root**, in a `mktemp -d` workspace |
+| `tests/test_pki_suggest.sh` | client-cert name/IP suggestions: mesh-domain suffix + next free overlay address |
 | `tests/test_sudo_mock.sh` | `sudo` is invoked **only** for privileged target dirs; failure is surfaced |
 | `tests/test_resolve_dir.sh` | `--cert-dir` > `NEBULA_KEYS_DIR` > saved selection > legacy dir > default |
 | `tests/test_port.sh` | listen-port resolution: `listen.port` → auto-detect → `default_port` |

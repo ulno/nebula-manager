@@ -154,7 +154,15 @@ the functional keys are `dir`, `service`, `enabled`.
 **TUI:** *Servers ▸ Add Server*, *Certificates ▸ Generate Client Certificate*,
 *Certificates ▸ Bundle Client Zip*.
 
-Sign certs unprivileged in the existing workspace:
+Sign certs unprivileged in the existing workspace. In the TUI the name and IP
+are **pre-filled from the existing certs** (domain suffix `.theprof.mesh`, next
+free address `10.100.0.4/24`) — just press Enter to accept:
+
+```
+[?] Enter the certificate name [theprof-framework.theprof.mesh]: theprof3.theprof.mesh
+[?] Enter the IP address [10.100.0.4/24]:
+[?] Enter the IP address [10.100.0.5/24]:    # next cert, after .4 is used
+```
 
 ```bash
 $ nebula-manager sign --cert-dir ~/keys/nebula \
