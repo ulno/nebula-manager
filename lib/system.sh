@@ -120,6 +120,11 @@ declare -A PKG_BASE=(
 declare -A PKG_RH_OVERRIDE=(
   [ping]="iputils"
 )
+# Arch/CachyOS package names that differ from the Debian defaults.
+declare -A PKG_ARCH_OVERRIDE=(
+  [ping]="iputils"
+  [whiptail]="libnewt"
+)
 
 # Function to detect architecture
 detect_arch() {
@@ -130,28 +135,55 @@ detect_arch() {
     esac
 }
 
-# Helper: resolve package for current distro
-pkg_for() {
-  local bin="$1"
-  if [[ -f /etc/redhat-release ]] && [[ -n "${PKG_RH_OVERRIDE[$bin]:-}" ]]; then
-    printf '%s' "${PKG_RH_OVERRIDE[$bin]}"
-  else
-    printf '%s' "${PKG_BASE[$bin]}"
-  fi
+# detect_distro -> debian | redhat | arch | unknown
+# Prefers /etc/os-release (covers Arch, CachyOS and other derivatives), then
+# falls back to the classic marker files.
+detect_distro() {
+    local id="" id_like="" token
+    if [[ -r /etc/os-release ]]; then
+        id="$(awk -F= '/^ID=/{gsub(/"/,"",$2);print $2}' /etc/os-release 2>/dev/null)"
+        id_like="$(awk -F= '/^ID_LIKE=/{gsub(/"/,"",$2);print $2}' /etc/os-release 2>/dev/null)"
+    fi
+    token="${id} ${id_like}"
+    case "$token" in
+        *cachyos*|*arch*)                              echo arch;   return 0 ;;
+        *debian*|*ubuntu*|*mint*|*pop*)                echo debian; return 0 ;;
+        *rhel*|*fedora*|*centos*|*rocky*|*almalinux*) echo redhat; return 0 ;;
+    esac
+    [[ -f /etc/arch-release ]]   && { echo arch;   return 0; }
+    [[ -f /etc/debian_version ]] && { echo debian; return 0; }
+    [[ -f /etc/redhat-release ]] && { echo redhat; return 0; }
+    echo unknown
 }
 
-# Function to check required packages (non-fatal for optional tools)
+# install_cmd_for <distro> -> printable install command (may be empty)
+install_cmd_for() {
+    case "$1" in
+        debian) echo "apt install" ;;
+        redhat) echo "dnf install" ;;
+        arch)   echo "pacman -S --needed" ;;
+        *)      echo "" ;;
+    esac
+}
+
+# Helper: resolve package for current distro
+pkg_for() {
+  local bin="$1" distro
+  distro="$(detect_distro)"
+  case "$distro" in
+    redhat) [[ -n "${PKG_RH_OVERRIDE[$bin]:-}" ]]   && { printf '%s' "${PKG_RH_OVERRIDE[$bin]}";   return 0; } ;;
+    arch)   [[ -n "${PKG_ARCH_OVERRIDE[$bin]:-}" ]] && { printf '%s' "${PKG_ARCH_OVERRIDE[$bin]}"; return 0; } ;;
+  esac
+  printf '%s' "${PKG_BASE[$bin]}"
+}
+
+# Function to check required packages. Returns 0 when nothing is missing (even
+# on an unknown distro) and 1 only when required tools are actually absent.
 check_dependencies() {
   [[ "${IGNORE_DEPENDENCY_CHECK:-false}" == true ]] && return 0
-  local install_cmd
-  if [[ -f /etc/debian_version ]]; then
-    install_cmd="apt install"
-  elif [[ -f /etc/redhat-release ]]; then
-    install_cmd="dnf install"
-  else
-    log_error "Unsupported distribution."
-    return 1
-  fi
+  local distro install_cmd
+  distro="$(detect_distro)"
+  install_cmd="$(install_cmd_for "$distro")"
   local missing=() bin pkg
   for bin in "${!PKG_BASE[@]}"; do
     [[ "$bin" == "iperf3" ]] && continue      # optional
@@ -162,7 +194,11 @@ check_dependencies() {
   if (( ${#missing[@]} )); then
     log_error "Missing dependencies:"
     printf '  - %s\n' "${missing[@]}" >&2
-    echo -e "\nInstall with:\n  ${YELLOW}sudo $install_cmd ${missing[*]}${RESET}" >&2
+    if [[ -n "$install_cmd" ]]; then
+      echo -e "\nInstall with:\n  ${YELLOW}sudo $install_cmd ${missing[*]}${RESET}" >&2
+    else
+      echo -e "\nInstall these with your distribution's package manager." >&2
+    fi
     return 1
   fi
   return 0

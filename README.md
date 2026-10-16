@@ -128,6 +128,15 @@ sudo apt install -y awk curl findutils grep jq sed sudo systemd tar wget yq core
 ```bash
 sudo dnf install -y curl findutils grep jq sed sudo systemd tar wget yq coreutils iperf3 iputils newt zip
 ```
+**<img src="https://img.shields.io/badge/Arch%20Linux-1793D1?logo=arch-linux&logoColor=white" alt="Arch Linux" height="20"/> / <img src="https://img.shields.io/badge/CachyOS-00A3E0?logo=arch-linux&logoColor=white" alt="CachyOS" height="20"/>
+```bash
+sudo pacman -S --needed gawk curl findutils grep jq sed sudo systemd tar wget yq coreutils iperf3 iputils libnewt zip
+```
+(`whiptail` is provided by `libnewt` on Arch family.)
+
+Supported distributions are auto-detected from `/etc/os-release` (Debian/Ubuntu, RHEL
+family, Arch/CachyOS). On an unrecognised distribution the tool still runs as long
+as the required tools are present — it just can't suggest the install command.
 
 ---
 
@@ -303,6 +312,7 @@ What it covers:
 | `tests/test_sudo_mock.sh` | `sudo` is invoked **only** for privileged target dirs; failure is surfaced |
 | `tests/test_resolve_dir.sh` | `--cert-dir` > `NEBULA_KEYS_DIR` > saved selection > legacy dir > default |
 | `tests/test_port.sh` | listen-port resolution: `listen.port` → auto-detect → `default_port` |
+| `tests/test_distro.sh` | distro detection + Arch/CachyOS package mapping; unknown distro no longer hard-fails |
 | `tests/test_realstore_readonly.sh` | uses a real cert store **read-only** (hashes unchanged, no `sudo`) |
 | `tests/test_cli.sh` | CLI parsing, flag precedence, usage/exit codes, end-to-end unprivileged PKI |
 | `tests/pki.bats` | BATS mirror of the core unprivileged-PKI guarantees |
