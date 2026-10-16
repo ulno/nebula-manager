@@ -520,10 +520,32 @@ mainly useful for testing.
 
 ---
 
+## 📖 User stories
+
+Two guiding examples drive the workflow and act as the acceptance criteria for
+planned features — see **[docs/user-stories.md](docs/user-stories.md)**:
+
+1. **Ulno, the networking teacher** — import an existing hand-rolled Nebula mesh,
+   add two more home machines, and hand out per-student profile collections.
+2. **The students** — join Ulno's mesh from Windows, Linux and macOS.
+
+The first story makes the case for a top priority: on a host where Nebula is
+*already running*, **discover the installation and offer to generate
+`nebula-manager.conf`** instead of asking for a config that doesn't exist yet.
+
+---
+
 ## 🧭 Roadmap / TODO
 
+- [ ] **`import` wizard** – detect a running Nebula (service, binaries, config,
+      certs, `tun.dev`, `listen.port`, lighthouse role) and generate
+      `nebula-manager.conf`; never silently elevate (show reason + command).
+- [ ] **`server add`** – build `[server.*]` sections from a live install.
+- [ ] **`client-setup <bundle>`** – install a bundle + service on a new host.
+- [ ] **`profile create`** – group collections (N bundles + CA + README/install).
 - [ ] **Pod/container support** – detect Nebula running under `podman`/`docker` and
       route lifecycle actions through the container runtime instead of `systemctl`.
+- [ ] **macOS `launchd`** service management; **Windows** guidance (WSL documented).
 - [ ] Optional `nebula-cert` JSON health checks / richer diagnostics output.
 
 ---
