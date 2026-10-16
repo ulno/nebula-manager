@@ -384,9 +384,9 @@ What it covers:
 | `tests/pki.bats` | BATS mirror of the core unprivileged-PKI guarantees |
 
 Requirements: `bash`, `nebula-cert` (for PKI tests; auto-skipped otherwise).
-BATS tests run when `bats` is installed. `test_realstore_readonly.sh` targets
-`/home/ulno/keys/nebula` by default (override with `NEBULA_TEST_STORE`) and
-skips when absent — it never writes to that store.
+BATS tests run when `bats` is installed. `test_realstore_readonly.sh` uses a real
+store from `$NEBULA_TEST_STORE` (unset by default, so it skips) and only ever
+reads from it — no paths or names are hardcoded.
 
 `make lint` syntax-checks the entrypoint and all modules (and runs `shellcheck`
 when available).
@@ -499,7 +499,7 @@ NEBULA_MANAGER_REPO=jordanhillis/nebula-manager NEBULA_MANAGER_REF=main ./nebula
 Confirm what is being checked with `paths`:
 
 ```bash
-./nebula-manager paths      # -> update-repo: ulno/nebula-manager@main
+./nebula-manager paths      # -> update-repo: theprof/nebula-manager@main
 ```
 
 ### Disabling the check
@@ -525,9 +525,9 @@ mainly useful for testing.
 Two guiding examples drive the workflow and act as the acceptance criteria for
 planned features — see **[docs/user-stories.md](docs/user-stories.md)**:
 
-1. **Ulno, the networking teacher** — import an existing hand-rolled Nebula mesh,
+1. **Theprof, the networking teacher** — import an existing hand-rolled Nebula mesh,
    add two more home machines, and hand out per-student profile collections.
-2. **The students** — join Ulno's mesh from Windows, Linux and macOS.
+2. **The students** — join Theprof's mesh from Windows, Linux and macOS.
 
 The first story makes the case for a top priority: on a host where Nebula is
 *already running*, **discover the installation and offer to generate
