@@ -21,6 +21,32 @@ The tool *manages* Nebula `config.yml` files, and *is configured by* `nebula-man
 
 ---
 
+## Using it from the TUI (the main way)
+
+Start the tool and everything is selectable from the text-graphical menus:
+
+```bash
+./nebula-manager        # or: nebula-manager
+```
+
+| Menu | Use it for |
+|---|---|
+| **Setup** | shows the detected state, then Import/Update / Create / Browse / Edit / Delete config, Manage servers, Certificate Workspace |
+| **Servers** | List / Add / Enable-Disable / Remove `[server.*]` |
+| **Certificates** | List / Create CA / Sign / View / Expiry / **Bundle client zip** / Revoke / Switch workspace |
+| **Configuration** | Validate / Edit Nebula `config.yml` / Firewall |
+| **Connectivity** | ping all cert IPs (+ optional `iperf3`) |
+| **Diagnostics** | TUN ip, UDP socket, cert expiry |
+| **Benchmarks** | `iperf3` server / client |
+| **Maintenance** | service toggle / update / auto-update scheduler / install / remove |
+
+With no config yet, the tool opens **Setup** for you, showing what it detected
+on this host (Nebula installed? a config already present? cert workspace?) before
+offering to import, create or browse for one. The command lines shown in the
+phases below are the **expert/automation** equivalents of the same menus.
+
+---
+
 ## Story 1 — Theprof, the networking teacher
 
 **Situation.** Theprof teaches a Nebula class. He already runs Nebula by hand:
@@ -53,6 +79,8 @@ graph TD
 
 ### Phase 0 — Import the existing setup (✅ available)
 
+**TUI:** *Setup ▸ Import / update from this host*.
+
 Today he would have to create a config by hand. The **intended** experience is a
 single discovery pass (✅ available):
 
@@ -76,7 +104,7 @@ Proposed nebula-manager.conf -> ~/.config/nebula-manager/nebula-manager.conf
 
   [server.theprof-framework]
   dir=/etc/nebula
-  service=/etc/systemd/system/nebula.service
+  service=nebula.service
   enabled=true
 
 Write this file? [Y/n]
@@ -84,7 +112,7 @@ Write this file? [Y/n]
 
 What the importer detects:
 
-- **service(s):** `systemctl list-units/list-unit-files 'nebula*'` → unit name + `FragmentPath`, and the `-config` path from the unit's `ExecStart` (falls back to `/etc/nebula/config.yml`).
+- **service(s):** `systemctl list-units/list-unit-files 'nebula*'` → unit name + `FragmentPath`, and the `-config` path from the unit's `ExecStart` (falls back to `/etc/nebula/config.yml`). If `systemctl` cannot reach the bus (containers, restricted shells) it **scans the unit files on disk** (`/etc/systemd/system`, `/run/systemd/system`, `/usr/lib/systemd/system`, `…/systemd/user`) instead.
 - **binaries:** `command -v nebula` → proposes `bin_path`.
 - **config keys:** `tun.dev`, `listen.port`, `lighthouse.am_lighthouse`, the first `static_host_map` peer, and `pki.ca` (whose directory becomes `cert_dir`).
 - **certs:** the `pki` directory, else any detected store (`$NEBULA_KEYS_DIR`, `~/keys/nebula`, `$NEBULA_DIR/certs`, the default); counts `*.crt`.
@@ -94,7 +122,9 @@ What the importer detects:
 Flags: `--dry-run` (print only), `--yes` (write non-interactively), `--force`
 (overwrite), `--from CONFIG` (use a specific Nebula config for discovery),
 `--config OUT` (output path). It refuses to write without confirmation on a
-non-tty unless `--yes` is given. If nothing is detected it falls back to:
+non-tty unless `--yes` is given. Re-running it over an existing config keeps a
+timestamped backup (`*.bak.YYYYmmdd-HHMMSS`) and updates in place. If nothing is
+detected it falls back to:
 
 ```bash
 nebula-manager config init          # write ~/.config/nebula-manager/nebula-manager.conf
@@ -102,6 +132,8 @@ nebula-manager config edit          # replace [server.nebula-example1] with your
 ```
 
 ### Phase 1 — Register the existing members (✅ available)
+
+**TUI:** *Servers ▸ Add Server* (list/enable/disable/remove in the same menu).
 
 ```bash
 $ nebula-manager server add theprof-framework --dir /etc/nebula --service nebula.service
@@ -118,6 +150,9 @@ Other subcommands: `server list` (table of `[server.*]` entries), `server remove
 the functional keys are `dir`, `service`, `enabled`.
 
 ### Phase 2 — Add home machines theprof3 and theprof4 (mostly ✅ today)
+
+**TUI:** *Servers ▸ Add Server*, *Certificates ▸ Generate Client Certificate*,
+*Certificates ▸ Bundle Client Zip*.
 
 Sign certs unprivileged in the existing workspace:
 
@@ -169,6 +204,8 @@ places files under `/etc/nebula`, patches the unit's config path, enables the
 service, and runs `diag` — elevating only for the individual system steps.
 
 ### Phase 3 — Two student groups of three machines (⚙️ planned "profiles")
+
+**TUI:** ⚙️ planned *Profiles ▸ Create group*.
 
 Theprof wants two isolated class networks and a ready-to-hand-out collection per
 group. ⚙️ Proposed:

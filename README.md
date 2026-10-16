@@ -41,15 +41,15 @@
 
 ## 🏗️ Architecture
 
-The tool is a thin entrypoint plus four modules under `lib/`:
+The tool is a thin entrypoint plus five modules under `lib/`:
 
 ```
-nebula-manager          # entrypoint: arg parsing, dispatch, TUI root
+nebula-manager          # entrypoint: arg parsing, dispatch, TUI root + Setup menu
 lib/
   ui.sh                 # colours, status badges, whiptail/dialog + plain menus
   pki.sh                # CA, signing, inspection, workspaces, client bundling
   bench.sh              # iperf3 server/client, connectivity, diagnostics
-  system.sh             # elevate()/sudo, systemd, /etc/nebula, install/update
+  system.sh             # elevate()/sudo, systemd, /etc/nebula, config & server mgmt
   import.sh             # discover an existing Nebula -> generate nebula-manager.conf
   nebula-manager.conf.template  # bundled config template (offline first-run)
 tests/                  # standalone mock-driven Bash test harness
@@ -182,54 +182,68 @@ are auto-detected and offered. **Browse** opens a directory browser
 
 ## 🛠️ Usage
 
-### Interactive (menu-driven)
+Nebula Manager is **menu-driven first**. Run it and everything is selectable from
+the text-graphical TUI (whiptail menus). The same actions are also available as
+headless subcommands for scripting — see *Expert / scriptable* below.
+
+### Interactive (the main way)
 
 ```bash
-./nebula-manager
+./nebula-manager        # or just: nebula-manager   (once installed)
 ```
 
-Menus cover: Certificates (list/CA/sign/view/expiry/**bundle zip**/revoke/workspace),
-Configuration (validate/edit/firewall), Connectivity, Benchmarks, and Maintenance
-(service toggle, update, scheduler, install, remove).
+| Menu | What you can do |
+|---|---|
+| **Setup** | shows the **detected state** (config, Nebula service, cert workspace), then: import/update, create, browse, edit, delete `nebula-manager.conf`, manage servers, pick the certificate workspace |
+| **Servers** | list / add / enable-disable / remove `[server.*]` entries |
+| **Certificates** | list, create CA, sign, view, expiry, **bundle zip**, revoke, switch workspace |
+| **Configuration** | validate / edit Nebula `config.yml`, edit firewall rules |
+| **Connectivity** | ping every cert IP; optional `iperf3` test |
+| **Diagnostics** | TUN IP, listening UDP socket, certificate expiry |
+| **Benchmarks** | `iperf3` server / client |
+| **Maintenance** | toggle the service, update Nebula, auto-update scheduler, install/remove |
 
-### Headless subcommands
+**First run** (no config yet) opens the **Setup** menu, which shows what was
+detected on this host and lets you *Import / update from this host* (adopt a
+running Nebula), *Create config from template*, or *Browse for a config file* —
+then *Manage servers* to add your servers and *Reload & continue* to enter the
+main menu.
+
+Handy extras: `NEBULA_UI=plain nebula-manager` gives the classic numbered menus;
+`NEBULA_UI=dialog nebula-manager` forces dialog instead of whiptail.
+
+### Expert / scriptable (the same actions as the menus)
 
 ```bash
-# Certificate authority + signing (unprivileged)
-./nebula-manager ca --name my-ca --duration 999999h --cert-dir ~/keys/nebula
-./nebula-manager sign --name host1 --ip 10.42.0.2/24 --groups servers \
-                      --duration 720 --cert-dir ~/keys/nebula
-
-# Import an existing Nebula install
-./nebula-manager import                # detect running Nebula -> propose nebula-manager.conf
-./nebula-manager import --dry-run      # just show what was detected / proposed
-./nebula-manager import --yes          # write it non-interactively
-
-# Manage [server.*] entries
+# Setup / servers           (TUI: Setup, Servers)
+./nebula-manager import                 # detect running Nebula -> propose nebula-manager.conf
+./nebula-manager import --dry-run       # just show what was detected / proposed
+./nebula-manager import --yes           # write it non-interactively
 ./nebula-manager server add vps --dir /etc/nebula --service nebula.service --role lighthouse --host vps.theprof.demo:4545
 ./nebula-manager server list
 ./nebula-manager server disable lab
 ./nebula-manager server remove lab
+./nebula-manager config init            # create ~/.config/nebula-manager/nebula-manager.conf
+./nebula-manager config edit            # open it in $EDITOR
+./nebula-manager config refresh         # pull the latest template from your repo
+./nebula-manager config remove --force  # delete the active config
 
-# Config management (offline template lives in lib/)
-./nebula-manager config path
-./nebula-manager config init          # create ~/.config/nebula-manager/nebula-manager.conf
-./nebula-manager config refresh       # pull the latest template from your repo
-
-# Inspect / bundle
+# Certificates               (TUI: Certificates)
+./nebula-manager ca --name my-ca --duration 999999h --cert-dir ~/keys/nebula
+./nebula-manager sign --name host1 --ip 10.42.0.2/24 --groups servers --cert-dir ~/keys/nebula
 ./nebula-manager cert list
-./nebula-manager cert expiry 30                 # certs expiring within 30 days
+./nebula-manager cert expiry 30         # certs expiring within 30 days
 ./nebula-manager cert bundle host1 ./bundles
 
-# Benchmarks & diagnostics (unprivileged)
+# Benchmarks & diagnostics   (TUI: Benchmarks, Diagnostics)
 ./nebula-manager bench server --port 5201
 ./nebula-manager bench client 10.42.0.2 --time 15 --streams 4 --reverse
-./nebula-manager diag                            # TUN IP, UDP socket, cert expiry
+./nebula-manager diag                   # TUN IP, UDP socket, cert expiry
 
 # Utilities
-./nebula-manager paths                           # resolved config / key dirs + UI backend
-./nebula-manager ui                              # which UI backend is active (whiptail/dialog/plain)
-./nebula-manager auto-update                     # update Nebula to latest
+./nebula-manager paths                  # resolved config / key dirs + UI backend
+./nebula-manager ui                     # which UI backend is active (whiptail/dialog/plain)
+./nebula-manager auto-update            # update Nebula to latest
 ./nebula-manager --version
 ```
 
@@ -253,6 +267,7 @@ Configuration (validate/edit/firewall), Connectivity, Benchmarks, and Maintenanc
 | `NEBULA_MANAGER_REF` | Git ref (branch) used for update checks (default `main`) |
 | `NEBULA_MANAGER_DEFAULT_REPO` | Last-resort repo when neither env nor git `origin` is available (default `jordanhillis/nebula-manager`) |
 | `NEBULA_UI` | UI backend: `auto` (whiptail → dialog → plain), `whiptail`, `dialog`, `plain` |
+| `NEBULA_NO_PROMPT` | Set to `1` to never prompt; unreadable privileged files are skipped instead of read via sudo (used internally for state detection) |
 | `NEBULA_DEFAULT_PORT` | Fallback Nebula listen port for diagnostics (default `4242`) |
 
 ---
@@ -263,27 +278,51 @@ Nebula Manager reads an **INI-style** config (with sections). The path is
 resolved as `--config` / `$NEBULA_MANAGER_CONF` → an existing
 `/etc/nebula/nebula-manager.conf` → `$XDG_CONFIG_HOME/nebula-manager/nebula-manager.conf`.
 
-### First run
+### First run — and the Setup menu
 
-If no config is found, the tool does **not** silently download anything. It asks:
+If no `nebula-manager.conf` is found (or none has usable `[server.*]` entries),
+the tool opens the **Setup menu** instead of dead-ending on a download. The menu
+first shows what it **detected on this host**, then offers the ways to get a
+config:
 
+```text
+┌───────────────────────┤ Main Menu > Setup ├────────────────────────┐
+│ Config: none yet (~/.config/nebula-manager/nebula-manager.conf)    │
+│ Nebula: installed (v1.11.2) - nebula.service running               │
+│ Certificates: /home/you/keys/nebula (7 .crt)                       │
+│                                                                    │
+│  1. Import / update from this host                                 │
+│  2. Create config from template                                    │
+│  3. Browse for a config file                                       │
+│  4. Edit config                                                    │
+│  5. Delete config                                                  │
+│  6. Manage servers                                                 │
+│  7. Certificate workspace                                          │
+│  8. Reload & continue                                              │
+│  9. Exit                                                           │
+└────────────────────────────────────────────────────────────────────┘
 ```
-[!] No configuration found at: /home/you/.config/nebula-manager/nebula-manager.conf
-    What would you like to do?
-      1. Create one at ~/.config/nebula-manager/nebula-manager.conf (from the bundled template)
-      2. Use an existing config file (browse)...
-      3. Download the latest template from <repo>
-      4. Cancel
-```
 
-- **Create** copies the bundled template that ships in `lib/`
+The status lines are recomputed on every redraw, so after an action (e.g.
+import) you immediately see the new state. Reached from the main menu, the
+Setup menu is the same but without *Exit* (it has a *Back* instead).
+
+- **Import / update** runs the read-only detector (`lib/import.sh`): it finds the
+  systemd unit, its `ExecStart … -config`, `tun.dev`, `listen.port`, the
+  lighthouse setting, the first `static_host_map` peer and the pki directory,
+  then proposes a `nebula-manager.conf`. Re-running it **updates** an existing
+  config — a timestamped backup (`*.bak.YYYYmmdd-HHMMSS`) is kept first.
+- **Create** copies the bundled template from `lib/`
   (`lib/nebula-manager.conf.template`) — **offline, no root**.
 - **Browse** opens a file browser (a `whiptail` menu navigator, or dialog's
-  native `--fselect`).
-- **Download** fetches the newest template from your source repo on request only.
+  native `--fselect`) and validates that the picked file really is a manager
+  conf (not Nebula's own `config.yml`).
+- **Delete** removes the active config (elevating only if it lives in a
+  privileged directory such as `/etc/nebula`).
 
-After **Create**/**Download** the tool offers to open the new file in `$EDITOR`,
-and then continues (it does not exit).
+The menu never changes anything without an explicit choice, and never needs root
+just to *show* the config or to write the per-user default under
+`$XDG_CONFIG_HOME`.
 
 ### Managing the config headlessly
 
@@ -293,6 +332,7 @@ and then continues (it does not exit).
 ./nebula-manager config init --config /etc/nebula/nebula-manager.conf
 ./nebula-manager config edit                 # open it in $EDITOR
 ./nebula-manager config refresh              # download the latest template
+./nebula-manager config remove [--force]     # delete the active config
 ```
 
 You can always point at any file with `--config`:
@@ -389,6 +429,8 @@ What it covers:
 | `tests/test_distro.sh` | distro detection + Arch/CachyOS package mapping; unknown distro no longer hard-fails |
 | `tests/test_workspace.sh` | certificate workspace selection + "already known" detection |
 | `tests/test_conf.sh` | config path resolution: user-first, `--config`/env override, bundled template + `config init` offline |
+| `tests/test_setup.sh` | Setup state summary (detected config/servers/workspace), `config_use_file` validation, `config remove` without sudo for user paths |
+| `tests/test_tui_menu.sh` | entrypoint Setup/bootstrap menu wiring (import/browse/delete/reload/exit) + the state-line refresh hook |
 | `tests/test_template_online.sh` | optional (needs `NEBULA_TEST_ONLINE=1`) freshness check of the bundled template vs the repo |
 | `tests/test_update.sh` | update source resolution (origin/env) + no-downgrade version comparison |
 | `tests/test_realstore_readonly.sh` | uses a real cert store **read-only** (hashes unchanged, no `sudo`) |

@@ -41,6 +41,37 @@ _imp_static_host() {
 
 # --- detection ---------------------------------------------------------------
 
+# Print "<unit>\t<path>" for nebula*.service unit files found on disk. Works
+# without a D-Bus session (containers, `sudo -i`, restricted shells) where
+# `systemctl` cannot connect to the system bus.
+_imp_scan_unit_files() {
+    local d f
+    for d in \
+        /etc/systemd/system \
+        /run/systemd/system \
+        /usr/lib/systemd/system \
+        /lib/systemd/system \
+        "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user" \
+        "${HOME:-}/.config/systemd/user"
+    do
+        [[ -d "$d" ]] || continue
+        for f in "$d"/nebula*.service; do
+            [[ -f "$f" ]] || continue
+            printf '%s\t%s\n' "$(basename "$f")" "$f"
+        done
+    done
+}
+
+# First ExecStart line of a unit file (without the key).
+_imp_unit_execstart() {
+    awk '
+        /^[[:space:]]*ExecStart[[:space:]]*=/ {
+            line = $0
+            sub(/^[[:space:]]*ExecStart[[:space:]]*=[[:space:]]*/, "", line)
+            print line; exit
+        }' "$1" 2>/dev/null
+}
+
 # import_detect [config_path_override]
 # Populates IMP_* globals from the environment (best effort, never fails hard).
 import_detect() {
@@ -54,19 +85,47 @@ import_detect() {
     neb="$(command -v nebula 2>/dev/null || true)"
     [[ -n "$neb" ]] && IMP_BIN_PATH="$(dirname "$(readlink -f "$neb")")"
 
-    # systemd units (only if systemctl is usable)
-    local units=""
+    # systemd units: prefer systemctl, but fall back to scanning unit files on
+    # disk so detection still works without a D-Bus session.
+    local units="" unit_path=""
     if command -v systemctl >/dev/null 2>&1; then
         units="$(systemctl list-units --type=service --all --no-legend 'nebula*' 2>/dev/null | awk 'NF{print $1}')"
         [[ -z "$units" ]] && units="$(systemctl list-unit-files --no-legend 'nebula*' 2>/dev/null | awk 'NF{print $1}')"
     fi
-    IMP_UNITS="$units"
     local u; u="$(printf '%s\n' "$units" | sed '/^$/d' | head -n1)"
-    IMP_SERVICE="${u:-nebula.service}"
     if [[ -n "$u" ]] && command -v systemctl >/dev/null 2>&1; then
-        IMP_SERVICE_PATH="$(systemctl show -p FragmentPath --value "$u" 2>/dev/null)"
-        local exec; exec="$(systemctl show -p ExecStart --value "$u" 2>/dev/null)"
+        unit_path="$(systemctl show -p FragmentPath --value "$u" 2>/dev/null)"
+    fi
+    if [[ -z "$u" || -z "$unit_path" || ! -f "$unit_path" ]]; then
+        local hit; hit="$(_imp_scan_unit_files | head -n1)"
+        if [[ -n "$hit" ]]; then
+            u="${hit%%$'\t'*}"
+            unit_path="${hit#*$'\t'}"
+            units="$u"
+        fi
+    fi
+    IMP_UNITS="$units"
+    IMP_SERVICE="${u:-nebula.service}"
+    IMP_SERVICE_PATH="$unit_path"
+
+    # ExecStart -> config path + binary path
+    local exec=""
+    if [[ -n "$unit_path" && -f "$unit_path" ]]; then
+        exec="$(_imp_unit_execstart "$unit_path")"
+    elif [[ -n "$u" ]] && command -v systemctl >/dev/null 2>&1; then
+        exec="$(systemctl show -p ExecStart --value "$u" 2>/dev/null)"
+    fi
+    if [[ -n "$exec" ]]; then
         IMP_CONFIG="$(printf '%s' "$exec" | grep -oE -- '-config[= ][^ ;]+' | head -n1 | sed -E 's/^-config[= ]//')"
+        local exe=""
+        if [[ "$exec" == *path=* ]]; then
+            exe="$(printf '%s' "$exec" | sed -E 's/.*path=([^ ;}]+).*/\1/')"
+        else
+            exe="$(printf '%s' "$exec" | awk '{print $1}')"
+        fi
+        if [[ -n "$exe" && -x "$exe" ]]; then
+            IMP_BIN_PATH="$(dirname "$(readlink -f "$exe")")"
+        fi
     fi
 
     # config path: override -> ExecStart -> default
@@ -133,7 +192,7 @@ import_render_conf() {
     [[ -n "$IMP_PORT" ]] && printf 'default_port=%s\n' "$IMP_PORT"
     printf '\n[server.%s]\n' "$name"
     printf 'dir=%s\n' "${IMP_CONFIG_DIR:-/etc/nebula}"
-    printf 'service=%s\n' "${IMP_SERVICE_PATH:-${IMP_SERVICE:-nebula.service}}"
+    printf 'service=%s\n' "${IMP_SERVICE:-nebula.service}"
     printf 'enabled=true\n'
 }
 
@@ -141,9 +200,19 @@ import_render_conf() {
 import_write_conf() {
     local dest="$1"
     ensure_dir "$(dirname "$dest")" || return 1
-    if [[ -e "$dest" && "${IMPORT_FORCE:-0}" != 1 ]]; then
-        log_error "Config already exists: $dest (use --force to overwrite)"
-        return 1
+    if [[ -e "$dest" ]]; then
+        # Non-interactive callers must opt in explicitly (--yes/--force).
+        if [[ "${IMPORT_FORCE:-0}" != 1 && "${IMPORT_YES:-0}" != 1 && ! -t 0 ]]; then
+            log_error "Config already exists: $dest (use --force to overwrite)"
+            return 1
+        fi
+        # Keep a backup before overwriting.
+        local bak; bak="${dest}.bak.$(date +%Y%m%d-%H%M%S)"
+        if path_requires_root "$dest"; then
+            elevate cp "$dest" "$bak" 2>/dev/null && log_info "Backed up existing config to $bak"
+        else
+            cp "$dest" "$bak" 2>/dev/null && log_info "Backed up existing config to $bak"
+        fi
     fi
     if path_requires_root "$dest"; then
         import_render_conf | elevate_why "write nebula-manager.conf to $dest" tee "$dest" >/dev/null
@@ -195,13 +264,14 @@ import_run() {
 
     (( dry )) && return 0
 
+    local verb="Write"; [[ -e "$target" ]] && verb="Overwrite"
     if [[ "${IMPORT_YES:-0}" != 1 ]]; then
         if [[ ! -t 0 ]]; then
-            log_error "Refusing to overwrite without confirmation; re-run with --yes."
+            log_error "Refusing to write without confirmation; re-run with --yes (or --force)."
             return 1
         fi
         local a
-        read -rp "$(show_status 'question') Write this config to $target? [Y/n]: " a
+        read -rp "$(show_status 'question') $verb this config to $target?$([[ -e "$target" ]] && echo ' (a backup will be kept)') [Y/n]: " a
         [[ "$a" =~ ^[Nn] ]] && { log_info "Aborted."; return 1; }
     fi
     import_write_conf "$target"

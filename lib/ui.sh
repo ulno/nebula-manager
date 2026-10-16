@@ -456,34 +456,81 @@ ui_menu() {
 ###################################################################
 ######################### Menu dispatcher #########################
 ###################################################################
-# Function to dynamically build option menus (plain text). Kept as the
-# default dispatcher because it works over any terminal/pipe.
+# Make a label safe for a curses box (strip ANSI colours and non-ASCII glyphs).
+_ui_label_clean() {
+    printf '%s' "$1" \
+        | sed -e 's/\\033\[[0-9;]*m//g' -e 's/\\e\[[0-9;]*m//g' -e 's/\o033\[[0-9;]*m//g' \
+        | tr -d '\200-\377' \
+        | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'
+}
+
+# Function to dynamically build option menus. Renders a text-graphical menu
+# (whiptail/dialog) when one is available, otherwise a plain numbered menu.
+# Force the numbered menu with NEBULA_UI=plain.
+#
+# An optional 5th argument names a "refresh" function that is run before every
+# redraw. It may rebuild the label/action arrays in place (they are passed by
+# name) and set DYNAMIC_MENU_PROMPT to a status line shown inside the box. That
+# is what lets the Setup menu show the *detected* state (config found? Nebula
+# installed? cert workspace?) and update it live as actions run. Note: freshness
+# is scoped per invocation - nested menus (which pass no refresh) ignore any
+# DYNAMIC_MENU_PROMPT left over from an outer menu.
 dynamic_menu() {
     local -n title_parts="$1"
     local -n labels="$2"
     local -n actions="$3"
     local depth="${4:-0}"  # Default to 0 if not passed
-    local indent=" "
+    local refresh="${5:-}"
+    local backend; backend="$(ui_backend)"
+    local indent=" " i choice
     for ((i = 0; i < depth; i++)); do
         indent+="   "  # 3 spaces per depth level
     done
+
     while true; do
-        show_menu_header "${title_parts[@]}"
-        for i in "${!labels[@]}"; do
-            printf "${indent}${BOLD}${YELLOW}%d.${RESET} %b\n" "$((i + 1))" "${labels[$i]}"
-        done
-        local max_choice="${#labels[@]}"
-        if (( depth > 0 )); then
-            ((max_choice++))
-            printf "${indent}${BOLD}${YELLOW}%d.${RESET} $(get_icon 'back')${BOLD}Go Back${RESET}\n" "$max_choice"
+        # Recompute dynamic state (and optionally the prompt) before each draw.
+        local prompt=""
+        if [[ -n "$refresh" ]]; then
+            "$refresh"
+            prompt="${DYNAMIC_MENU_PROMPT:-}"
         fi
-        read -p "${indent}$(show_status 'question') Choose an option [1-$max_choice]: " choice
-        if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#labels[@]} )); then
-            eval "${actions[$((choice - 1))]}"
-        elif (( depth > 0 && choice == max_choice )); then
-            break
+        if [[ "$backend" != "plain" ]]; then
+            # ---- text-graphical menu ----
+            [[ -z "$prompt" ]] && prompt="Choose an option"
+            local -a pairs=()
+            for i in "${!labels[@]}"; do
+                pairs+=( "$((i + 1))" "$(_ui_label_clean "${labels[$i]}")" )
+            done
+            (( depth > 0 )) && pairs+=( "0" "Back" )
+            local sel
+            sel="$(ui_menu "${title_parts[*]}" "$prompt" "${pairs[@]}")" || return 0
+            [[ "$sel" == "0" ]] && return 0
+            eval "${actions[$((sel - 1))]}"
+            # A reload request unwinds every nested menu back to tui_main(), which
+            # owns the flag and clears it there.
+            [[ "${TUI_RESTART:-0}" == 1 ]] && return 0
+            read -rp "$(show_status 'question') Press Enter to continue..." _ 2>/dev/null || true
         else
-            echo -e "${indent}$(show_status 'error') ${RED}Invalid option. Please choose again.${RESET}"
+            # ---- plain numbered menu ----
+            show_menu_header "${title_parts[@]}"
+            [[ -n "$prompt" ]] && printf '%b\n' "$prompt"
+            for i in "${!labels[@]}"; do
+                printf "${indent}${BOLD}${YELLOW}%d.${RESET} %b\n" "$((i + 1))" "${labels[$i]}"
+            done
+            local max_choice="${#labels[@]}"
+            if (( depth > 0 )); then
+                ((max_choice++))
+                printf "${indent}${BOLD}${YELLOW}%d.${RESET} $(get_icon 'back')${BOLD}Go Back${RESET}\n" "$max_choice"
+            fi
+            read -p "${indent}$(show_status 'question') Choose an option [1-$max_choice]: " choice || { printf '\n'; break; }
+            if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#labels[@]} )); then
+                eval "${actions[$((choice - 1))]}"
+                [[ "${TUI_RESTART:-0}" == 1 ]] && break
+            elif (( depth > 0 && choice == max_choice )); then
+                break
+            else
+                echo -e "${indent}$(show_status 'error') ${RED}Invalid option. Please choose again.${RESET}"
+            fi
         fi
     done
 }

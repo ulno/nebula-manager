@@ -74,6 +74,26 @@ assert_eq "small menu uses minimum width" "$_UI_W" "60"
 assert_eq "menu height = prompt lines + items + 7" "$_UI_H" "10"
 unset UI_MENU_COLS UI_MENU_ROWS
 
+# a multi-line prompt (like the Setup state summary) still fits the box
+UI_MENU_COLS=100
+UI_MENU_ROWS=40
+_ui_menu_geometry "$(printf 'Config: /x (2 server(s) enabled)\nNebula: installed (v1.11.2)\nCertificates: /y (5 .crt)')" \
+    1 "Import / update from this host" 2 "Create config from template" 3 "Browse for a config file" \
+    4 "Edit config" 5 "Delete config" 6 "Manage servers" 7 "Certificate workspace" \
+    8 "Reload & continue" 9 "Exit"
+if (( _UI_W >= 60 && _UI_H <= 38 )); then
+    _ok "multi-line setup prompt sizes a sane box"
+else
+    _bad "multi-line setup prompt sizes a sane box" "got ${_UI_W}x${_UI_H}"
+fi
+unset UI_MENU_COLS UI_MENU_ROWS
+
+# --- label cleaning for curses menus ---
+export USE_ICONS=true
+assert_eq "label clean strips colour + emoji" \
+    "$(_ui_label_clean "$(get_icon 'certificate')Certificates ${BOLD}${RESET}")" "Certificates"
+assert_eq "label clean trims whitespace" "$(_ui_label_clean "   spaced   ")" "spaced"
+
 # whiptail has no --fselect; we use a menu navigator instead
 if declare -F _ui_whiptail_browse >/dev/null; then _ok "whiptail browser helper defined"; else _bad "whiptail browser helper defined"; fi
 

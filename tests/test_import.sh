@@ -64,4 +64,16 @@ assert_no_file "non-tty without --yes refuses to write" "$SANDBOX/out.conf"
 assert_file "writes with --yes" "$SANDBOX/out.conf"
 assert_contains "written config has cert_dir" "$(cat "$SANDBOX/out.conf")" "cert_dir=$SANDBOX/keys"
 
+# --- unit-file parsing / service-name rendering (works without D-Bus) ---
+ud="$SANDBOX/units"; mkdir -p "$ud"
+printf '[Service]\nExecStart=/usr/bin/nebula -config %s/config.yml\n' "$SANDBOX" > "$ud/nebula.service"
+assert_eq "parses ExecStart from a unit file" \
+    "$(_imp_unit_execstart "$ud/nebula.service")" "/usr/bin/nebula -config $SANDBOX/config.yml"
+
+# service= is rendered as the unit NAME even when we resolved a unit-file path
+IMP_SERVICE="nebula.service"
+IMP_SERVICE_PATH="/lib/systemd/system/nebula.service"
+assert_contains "render prefers the unit name" "$(import_render_conf)" "service=nebula.service"
+assert_not_contains "render does not emit a unit path" "$(import_render_conf)" "service=/lib/systemd"
+
 harness_summary
