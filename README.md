@@ -205,6 +205,12 @@ Configuration (validate/edit/firewall), Connectivity, Benchmarks, and Maintenanc
 ./nebula-manager import --dry-run      # just show what was detected / proposed
 ./nebula-manager import --yes          # write it non-interactively
 
+# Manage [server.*] entries
+./nebula-manager server add vps --dir /etc/nebula --service nebula.service --role lighthouse --host vps.theprof.demo:4545
+./nebula-manager server list
+./nebula-manager server disable lab
+./nebula-manager server remove lab
+
 # Config management (offline template lives in lib/)
 ./nebula-manager config path
 ./nebula-manager config init          # create ~/.config/nebula-manager/nebula-manager.conf
@@ -547,7 +553,8 @@ is *already running*, discover the installation and offer to generate
 - [x] **`import` wizard** – detect a running Nebula (service, binaries, config,
       certs, `tun.dev`, `listen.port`, lighthouse role) and generate
       `nebula-manager.conf`; never silently elevate (show reason + command).
-- [ ] **`server add`** – build `[server.*]` sections from a live install.
+- [x] **`server add/list/remove/enable/disable`** – manage `[server.*]` entries
+      (idempotent add, informational `role`/`host`).
 - [ ] **`client-setup <bundle>`** – install a bundle + service on a new host.
 - [ ] **`profile create`** – group collections (N bundles + CA + README/install).
 - [ ] **Pod/container support** – detect Nebula running under `podman`/`docker` and

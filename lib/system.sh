@@ -956,6 +956,187 @@ config_cli() {
     esac
 }
 
+###################################################################
+#################### [server.*] management ########################
+###################################################################
+
+# Write a prepared file into place (elevating only if the target needs it).
+_conf_write() {
+    local src="$1"
+    if path_requires_root "$SERVER_CONF"; then
+        elevate_why "update $SERVER_CONF" cp "$src" "$SERVER_CONF"
+    else
+        cp "$src" "$SERVER_CONF"
+    fi
+}
+
+_conf_ensure_exists() {
+    [[ -f "$SERVER_CONF" ]] && return 0
+    ensure_dir "$(dirname "$SERVER_CONF")" || return 1
+    local tmp; tmp="$(mktemp)"
+    {
+        printf '# nebula-manager.conf (created by "nebula-manager server")\n'
+        printf '[global]\n'
+        printf 'bin_path=%s\n' "${NEBULA_BIN_PATH:-/usr/local/bin}"
+        printf 'cert_dir=%s\n' "$(resolve_cert_dir)"
+    } > "$tmp"
+    _conf_write "$tmp"; rm -f "$tmp"
+}
+
+server_section_exists() {
+    [[ -f "$SERVER_CONF" ]] && grep -qF "[server.$1]" "$SERVER_CONF"
+}
+
+# server_add_entry <name> [dir] [service] [enabled] [role] [host]
+# Adds or replaces the [server.<name>] section in $SERVER_CONF.
+server_add_entry() {
+    local name="$1" dir="${2:-}" service="${3:-}" enabled="${4:-true}" role="${5:-}" host="${6:-}"
+    [[ -n "$name" ]] || { log_error "server name is required"; return 2; }
+    _conf_ensure_exists || return 1
+
+    local tmp; tmp="$(mktemp)"
+    {
+        # keep everything except an existing [server.<name>] section (re-add below)
+        awk -v sec="server.$name" '
+            /^\[/ { skip = ($0 == "[" sec "]") }
+            skip { next }
+            { print }
+        ' "$SERVER_CONF" 2>/dev/null || true
+        printf '\n[server.%s]\n' "$name"
+        [[ -n "$dir"     ]] && printf 'dir=%s\n'     "$dir"
+        [[ -n "$service" ]] && printf 'service=%s\n' "$service"
+        [[ -n "$role"    ]] && printf 'role=%s\n'    "$role"
+        [[ -n "$host"    ]] && printf 'host=%s\n'    "$host"
+        printf 'enabled=%s\n' "$enabled"
+    } > "$tmp"
+    if _conf_write "$tmp"; then
+        log_success "Added server '${name}' to $SERVER_CONF"
+    else
+        rm -f "$tmp"; return 1
+    fi
+    rm -f "$tmp"
+}
+
+# server_remove_entry <name>
+server_remove_entry() {
+    local name="$1"
+    server_section_exists "$name" || { log_error "No [server.$name] in $SERVER_CONF"; return 1; }
+    local tmp; tmp="$(mktemp)"
+    awk -v sec="server.$name" '
+        /^\[/ { skip = ($0 == "[" sec "]") }
+        skip { next }
+        { print }
+    ' "$SERVER_CONF" > "$tmp"
+    _conf_write "$tmp" && log_success "Removed server '${name}'" || { rm -f "$tmp"; return 1; }
+    rm -f "$tmp"
+}
+
+# server_set_enabled <name> <true|false>
+server_set_enabled() {
+    local name="$1" val="$2"
+    server_section_exists "$name" || { log_error "No [server.$name] in $SERVER_CONF"; return 1; }
+    local tmp; tmp="$(mktemp)"
+    awk -v sec="server.$name" -v val="$val" '
+        $0 == "[" sec "]" { insec=1; print; next }
+        /^\[/ { if (insec && !set) print "enabled=" val; insec=0 }
+        insec && /^[[:space:]]*enabled[[:space:]]*=/ { print "enabled=" val; set=1; next }
+        { print }
+        END { if (insec && !set) print "enabled=" val }
+    ' "$SERVER_CONF" > "$tmp"
+    _conf_write "$tmp" && log_success "Set [server.${name}] enabled=${val}" || { rm -f "$tmp"; return 1; }
+    rm -f "$tmp"
+}
+
+# Print "name|dir|service|enabled|role|host" for each [server.*] (raw config).
+server_entries() {
+    local conf_src
+    conf_src="$(readable_nebula_config "$SERVER_CONF")" || return 1
+    awk '
+        /^\[server\./ {
+            if (n) print n"|"d"|"sv"|"en"|"ro"|"ho
+            n=$0; sub(/^\[server\./,"",n); sub(/\][[:space:]]*$/,"",n)
+            d=""; sv=""; en=""; ro=""; ho=""; next
+        }
+        /^\[/ { if (n) print n"|"d"|"sv"|"en"|"ro"|"ho; n="" }
+        /^[[:space:]]*dir[[:space:]]*=/     { v=$0; sub(/^[^=]*=[[:space:]]*/,"",v); d=v }
+        /^[[:space:]]*service[[:space:]]*=/ { v=$0; sub(/^[^=]*=[[:space:]]*/,"",v); sv=v }
+        /^[[:space:]]*enabled[[:space:]]*=/ { v=$0; sub(/^[^=]*=[[:space:]]*/,"",v); en=v }
+        /^[[:space:]]*role[[:space:]]*=/    { v=$0; sub(/^[^=]*=[[:space:]]*/,"",v); ro=v }
+        /^[[:space:]]*host[[:space:]]*=/    { v=$0; sub(/^[^=]*=[[:space:]]*/,"",v); ho=v }
+        END { if (n) print n"|"d"|"sv"|"en"|"ro"|"ho }
+    ' "$conf_src"
+    [[ "$conf_src" != "$SERVER_CONF" ]] && rm -f "$conf_src"
+    return 0
+}
+
+server_list() {
+    [[ -f "$SERVER_CONF" ]] || { log_error "No config: $SERVER_CONF"; return 1; }
+    local rows; rows="$(server_entries)" || { log_error "Cannot read $SERVER_CONF"; return 1; }
+    [[ -n "$rows" ]] || { log_warn "No [server.*] entries in $SERVER_CONF"; return 0; }
+    printf '%-20s %-8s %-24s %-24s %s\n' "Name" "Enabled" "Dir" "Service" "Role/Host"
+    local n d sv en ro ho
+    while IFS='|' read -r n d sv en ro ho; do
+        [[ -z "$n" ]] && continue
+        printf '%-20s %-8s %-24s %-24s %s\n' "$n" "${en:-?}" "$d" "$sv" "${ro}${ro:+ }${ho}"
+    done <<< "$rows"
+}
+
+server_add_cli() {
+    local name="" dir="" service="" enabled="true" role="" host=""
+    while (($#)); do
+        case "$1" in
+            --dir|-d)     shift; dir="${1:-}" ;;
+            --service|-s) shift; service="${1:-}" ;;
+            --role)       shift; role="${1:-}" ;;
+            --host)       shift; host="${1:-}" ;;
+            --enabled)    shift; enabled="${1:-true}" ;;
+            --disabled)   enabled="false" ;;
+            --config)     shift; CONF_OVERRIDE="${1:-}" ;;
+            *)            [[ -z "$name" ]] && name="$1" || log_warn "Ignoring extra argument: $1" ;;
+        esac
+        shift
+    done
+    if [[ -z "$name" ]]; then
+        echo "Usage: nebula-manager server add NAME [--dir DIR] [--service UNIT] [--role R] [--host H:P] [--disabled]" >&2
+        return 2
+    fi
+    SERVER_CONF="$(resolve_server_conf)"
+    [[ -z "$dir" ]]     && { dir="/etc/nebula";            log_warn "Using default dir=$dir (override with --dir)"; }
+    [[ -z "$service" ]] && { service="nebula.service";      log_warn "Using default service=$service (override with --service)"; }
+    server_add_entry "$name" "$dir" "$service" "$enabled" "$role" "$host"
+}
+
+server_remove_cli() {
+    local name="${1:-}" sub
+    [[ -n "$name" ]] || { echo "Usage: nebula-manager server remove NAME" >&2; return 2; }
+    shift || true
+    while (($#)); do case "$1" in --config) shift; CONF_OVERRIDE="${1:-}";; esac; shift; done
+    SERVER_CONF="$(resolve_server_conf)"
+    server_remove_entry "$name"
+}
+
+server_toggle_cli() {
+    local want="$1"; shift || true
+    local name="${1:-}"
+    [[ -n "$name" ]] || { echo "Usage: nebula-manager server $want NAME" >&2; return 2; }
+    shift || true
+    while (($#)); do case "$1" in --config) shift; CONF_OVERRIDE="${1:-}";; esac; shift; done
+    SERVER_CONF="$(resolve_server_conf)"
+    [[ "$want" == enable ]] && server_set_enabled "$name" true || server_set_enabled "$name" false
+}
+
+server_cli() {
+    local sub="${1:-list}"; shift || true
+    case "$sub" in
+        add)            server_add_cli "$@" ;;
+        list|ls)        SERVER_CONF="$(resolve_server_conf)"; server_list ;;
+        remove|rm|del)  server_remove_cli "$@" ;;
+        enable)         server_toggle_cli enable "$@" ;;
+        disable)        server_toggle_cli disable "$@" ;;
+        *) log_error "Unknown 'server' subcommand: $sub (add|list|remove|enable|disable)"; return 2 ;;
+    esac
+}
+
 # Function to load global variables from conf file
 load_global_config() {
     if [[ ! -f "$SERVER_CONF" ]]; then

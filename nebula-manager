@@ -171,6 +171,7 @@ Commands:
   bench server|client [...]       iperf3 benchmarks
   diag                            Diagnostics (TUN IP, UDP socket, cert expiry)
   config path|init|refresh|edit   Manage nebula-manager.conf (offline template)
+  server add|list|remove|...      Manage [server.*] entries in nebula-manager.conf
   import [--dry-run] [--yes]      Detect a running Nebula and generate nebula-manager.conf
   ui                              Report the selected UI backend (whiptail/dialog/plain)
   paths                           Print resolved config & key directories
@@ -237,6 +238,7 @@ main() {
         bench)          shift; bench_cli "$@" ;;
         diag|diagnose)  shift; diag_cli "$@" ;;
         config|conf)    shift; config_cli "$@" ;;
+        server|srv)     shift; server_cli "$@" ;;
         import)         shift; import_cli "$@" ;;
         ui)             ui_report ;;
         auto-update)
