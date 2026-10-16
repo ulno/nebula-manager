@@ -48,15 +48,28 @@ fi
 export NEBULA_UI=plain
 assert_eq "explicit NEBULA_UI=plain" "$(ui_backend)" "plain"
 
-# auto prefers whiptail; with no usable tty it degrades to plain
+# auto now defaults to the plain numbered menu (also for headless runs).
 if [[ ! -t 0 ]]; then
     unset NEBULA_UI
-    assert_eq "auto without tty -> plain" "$(ui_backend)" "plain"
+    assert_eq "auto menu backend -> plain" "$(ui_backend)" "plain"
+    assert_eq "auto browse backend -> plain (no tty)" "$(ui_browse_backend)" "plain"
     export NEBULA_UI=plain
 fi
 
+# an explicit backend is honoured for both menus and browsing
+if command -v whiptail >/dev/null 2>&1; then
+    export NEBULA_UI=whiptail
+    assert_eq "whiptail forced for menus"  "$(ui_backend)" "whiptail"
+    assert_eq "whiptail forced for browse" "$(ui_browse_backend)" "whiptail"
+fi
+export NEBULA_UI=plain
+assert_eq "plain forced for menus"  "$(ui_backend)" "plain"
+assert_eq "plain forced for browse" "$(ui_browse_backend)" "plain"
+
 # --- ui_report is available and reports the selection ---
-assert_contains "ui_report shows selected backend" "$(ui_report)" "selected backend:"
+report="$(ui_report)"
+assert_contains "ui_report shows the menu backend"   "$report" "menu backend:"
+assert_contains "ui_report shows the browse backend" "$report" "browse backend:"
 
 # --- menu geometry: box sized to content, capped to terminal, descs truncated ---
 UI_MENU_COLS=80

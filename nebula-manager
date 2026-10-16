@@ -309,7 +309,7 @@ Global options:
   --config <path>       Path to nebula-manager.conf   (default: $SERVER_CONF)
   --cert-dir <path>     Certificate workspace directory (overrides everything)
   --keys-dir <path>     Alias for NEBULA_KEYS_DIR (certificate workspace)
-  --ui <backend>        UI backend: auto|plain|whiptail|dialog
+  --ui <backend>        UI backend: auto|plain|whiptail|dialog (auto = plain menus)
   --no-color            Disable colored output
   -v, --version         Print version
   -h, --help            Show this help
@@ -324,7 +324,7 @@ Commands:
   config path|init|refresh|edit|remove   Manage nebula-manager.conf (offline template)
   server add|list|remove|...      Manage [server.*] entries in nebula-manager.conf
   import [--dry-run] [--yes]      Detect a running Nebula and generate nebula-manager.conf
-  ui                              Report the selected UI backend (whiptail/dialog/plain)
+  ui                              Report the selected menu/browse UI backends
   paths                           Print resolved config & key directories
   auto-update                     Update Nebula to the latest release
 

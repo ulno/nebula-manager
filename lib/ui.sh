@@ -195,9 +195,13 @@ hash_color_256() {
 # Every interactive prompt goes through these wrappers so that the tool
 # degrades gracefully: whiptail -> dialog -> plain stdin/stdout.
 
-# Select which backend to use. Honours NEBULA_UI=auto|whiptail|dialog|plain.
-# whiptail is strongly preferred; dialog is a last resort and plain text is the
-# final fallback (also used for non-interactive/headless runs).
+# Select which backend to use for MENUS. Default (auto) is the PLAIN numbered
+# menu: it is predictable, easy to debug / copy-paste, never clears the screen,
+# and keeps the reason for a prompt visible. Set NEBULA_UI=whiptail|dialog to
+# force a curses UI for everything.
+#
+# File/dir *browsing* is different (typing paths is painful), so it uses
+# ui_browse_backend(), which prefers a graphical picker when one is available.
 ui_backend() {
     local b="plain"
     case "${NEBULA_UI:-auto}" in
@@ -205,26 +209,14 @@ ui_backend() {
         whiptail) command -v whiptail >/dev/null 2>&1 && b="whiptail" ;;
         dialog)   command -v dialog   >/dev/null 2>&1 && b="dialog" ;;
         *)
-            # auto: a curses UI needs an interactive stdin. Note that stdout is
-            # usually a pipe here (wrappers run in a command substitution), so we
-            # must NOT test -t 1 - that caused an invisible plain fallback.
-            if [[ -t 0 ]]; then
-                if command -v whiptail >/dev/null 2>&1; then
-                    b="whiptail"
-                elif command -v dialog >/dev/null 2>&1; then
-                    b="dialog"
-                    if [[ "${_NEBULA_DIALOG_WARNED:-}" != 1 ]]; then
-                        log_warn "whiptail not found - falling back to dialog (last resort; install whiptail for the best UI)."
-                        _NEBULA_DIALOG_WARNED=1
-                    fi
-                fi
-            fi
+            # auto: plain numbered menus (the debugging-friendly default).
+            b="plain"
             ;;
     esac
     # NEBULA_UI_DEBUG=1 prints exactly which backend (and paths) are in play.
     if [[ "${NEBULA_UI_DEBUG:-0}" == "1" ]]; then
-        printf 'ui: requested=%s selected=%s whiptail=%s dialog=%s stdin_tty=%s\n' \
-            "${NEBULA_UI:-auto}" "$b" \
+        printf 'ui: requested=%s menu=%s browse=%s whiptail=%s dialog=%s stdin_tty=%s\n' \
+            "${NEBULA_UI:-auto}" "$b" "$(ui_browse_backend)" \
             "$(command -v whiptail 2>/dev/null || echo -)" \
             "$(command -v dialog   2>/dev/null || echo -)" \
             "$([[ -t 0 ]] && echo y || echo n)" >&2
@@ -232,16 +224,43 @@ ui_backend() {
     printf '%s' "$b"
 }
 
-# ui_report : explain which backend is selected and why (diagnostic aid).
+# Backend for file / directory selection. Under 'auto' prefer a graphical picker
+# (whiptail, then dialog) because navigating a filesystem by typing paths is
+# awkward; fall back to plain when there is no tty or no picker. An explicit
+# NEBULA_UI is honoured (NEBULA_UI=plain keeps even browsing plain).
+ui_browse_backend() {
+    local b="plain"
+    case "${NEBULA_UI:-auto}" in
+        plain)    b="plain" ;;
+        whiptail) command -v whiptail >/dev/null 2>&1 && b="whiptail" ;;
+        dialog)   command -v dialog   >/dev/null 2>&1 && b="dialog" ;;
+        *)
+            if [[ -t 0 ]]; then
+                if command -v whiptail >/dev/null 2>&1; then
+                    b="whiptail"
+                elif command -v dialog >/dev/null 2>&1; then
+                    b="dialog"
+                fi
+            fi
+            ;;
+    esac
+    printf '%s' "$b"
+}
+
+# ui_report : explain which backends are selected and why (diagnostic aid).
 ui_report() {
-    local b; b="$(ui_backend)"
+    local m b
+    m="$(ui_backend)"; b="$(ui_browse_backend)"
     printf 'requested (NEBULA_UI): %s\n' "${NEBULA_UI:-<unset/auto>}"
-    printf 'selected backend:      %s\n' "$b"
+    printf 'menu backend:          %s\n' "$m"
+    printf 'browse backend:        %s\n' "$b"
     printf 'whiptail:              %s\n' "$(command -v whiptail 2>/dev/null || echo 'not found')"
     printf 'dialog:                %s\n' "$(command -v dialog   2>/dev/null || echo 'not found')"
     printf 'stdin is a tty:        %s\n' "$([[ -t 0 ]] && echo yes || echo no)"
-    if [[ "$b" == dialog ]]; then
-        printf 'note: whiptail is preferred. Unset NEBULA_UI (or set NEBULA_UI=whiptail) for the nicer UI.\n'
+    if [[ "$m" == plain && "$b" == plain ]]; then
+        printf 'note: plain is the default. NEBULA_UI=whiptail forces a curses UI everywhere.\n'
+    elif [[ "$m" == dialog || "$b" == dialog ]]; then
+        printf 'note: whiptail is preferred over dialog.\n'
     fi
 }
 
@@ -330,10 +349,10 @@ _ui_whiptail_browse() {
 }
 
 # ui_fselect <title> <prompt> [start_dir] ; prints the selected file
-# whiptail -> menu navigator; dialog -> native --fselect; else typed path.
+# graphical pickers when available; else a typed path.
 ui_fselect() {
     local title="$1" prompt="$2" start="${3:-$HOME}" backend value
-    backend="$(ui_backend)"
+    backend="$(ui_browse_backend)"
     case "$backend" in
         whiptail) value="$(_ui_whiptail_browse "$title" "$start" file)" || return 1 ;;
         dialog)   value=$(dialog --title "$title" --cancel-button "Back" --fselect "${start%/}/" 20 "$(_ui_box_cols)" 3>&1 1>&2 2>&3) || return 1 ;;
@@ -343,10 +362,10 @@ ui_fselect() {
 }
 
 # ui_dselect <title> <prompt> [start_dir] ; prints the selected directory
-# whiptail -> menu navigator; dialog -> native --dselect; else typed path.
+# graphical pickers when available; else a typed path.
 ui_dselect() {
     local title="$1" prompt="$2" start="${3:-$HOME}" backend value
-    backend="$(ui_backend)"
+    backend="$(ui_browse_backend)"
     case "$backend" in
         whiptail) value="$(_ui_whiptail_browse "$title" "$start" dir)" || return 1 ;;
         dialog)   value=$(dialog --title "$title" --cancel-button "Back" --dselect "${start%/}/" 20 "$(_ui_box_cols)" 3>&1 1>&2 2>&3) || return 1 ;;
@@ -451,6 +470,40 @@ ui_menu() {
             ;;
     esac
     printf '%s' "$choice"
+}
+
+# ui_choose_or_path <title> <prompt> <tag> <desc> [...]
+# Like ui_menu, but in plain mode a typed filesystem path is ALSO accepted and
+# returned as "path:<value>" (so a user can either pick a number or just type
+# the directory they mean). Curses backends return the chosen tag as usual.
+# Return codes: 0 = chose (answer on stdout), 2 = invalid input, 1 = cancel/EOF.
+ui_choose_or_path() {
+    local title="$1" prompt="$2"; shift 2
+    local backend; backend="$(ui_backend)"
+    if [[ "$backend" != "plain" ]]; then
+        ui_menu "$title" "$prompt" "$@"
+        return
+    fi
+    echo -e "${BOLD}$title${RESET}" >&2
+    [[ -n "$prompt" ]] && echo -e "$prompt" >&2
+    local -a tags=()
+    while (( $# )); do
+        tags+=("$1")
+        printf "  ${BOLD}${YELLOW}%d.${RESET} %s\n" "${#tags[@]}" "$2" >&2
+        shift 2
+    done
+    local answer
+    read -rp "$(show_status 'question') $prompt " answer || return 1
+    if [[ "$answer" =~ ^[0-9]+$ ]] && (( answer >= 1 && answer <= ${#tags[@]} )); then
+        printf '%s' "${tags[$((answer-1))]}"
+        return 0
+    fi
+    # A typed path (contains a slash, or is relative/home-relative) is accepted.
+    if [[ -n "$answer" && ( "$answer" == */* || "$answer" == "~"* || "$answer" == .* ) ]]; then
+        printf 'path:%s' "${answer/#\~/$HOME}"
+        return 0
+    fi
+    return 2
 }
 
 ###################################################################

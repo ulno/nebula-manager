@@ -230,13 +230,19 @@ check_dependencies() {
 
 NEBULA_VERSION=""
 
+# Path to the nebula binary: the configured bin_path if present, else $PATH.
+nebula_bin() {
+    local bin="${NEBULA_BIN_PATH:-/usr/local/bin}/nebula"
+    [[ -x "$bin" ]] || bin="$(command -v nebula 2>/dev/null || true)"
+    printf '%s' "$bin"
+}
+
 # Function to check installed version of Nebula
 check_nebula_installed() {
     # Prefer the configured bin path, but fall back to whatever is on $PATH so a
     # distro-installed nebula (e.g. /usr/bin/nebula) is still recognised.
-    local bin="${NEBULA_BIN_PATH:-/usr/local/bin}/nebula"
-    [[ -x "$bin" ]] || bin="$(command -v nebula 2>/dev/null || true)"
-    [[ -x "$bin" ]] || return 1
+    local bin; bin="$(nebula_bin)"
+    [[ -n "$bin" && -x "$bin" ]] || return 1
     NEBULA_VERSION="$("$bin" --version 2>/dev/null | grep -i "version" | awk '{print $2}')"
     return 0
 }
@@ -244,15 +250,26 @@ check_nebula_installed() {
 # Function to check nebula config file for errors
 check_nebula_config() {
     local config_file="${1:-${NEBULA_DIR:-/etc/nebula}/config.yml}"
-    local filter="$2"
+    local filter="${2:-}"
     if [[ ! -f "$config_file" ]]; then
         log_error "Nebula config file not found at $config_file."
         return 1
     fi
+    # The config is often owned by the service user (nobody); test a readable copy
+    # (asking for elevation with the reason shown when needed).
+    local r; r="$(readable_nebula_config "$config_file")" || r=""
+    if [[ -z "$r" ]]; then
+        log_error "Cannot read Nebula config at $config_file (permission denied)."
+        return 1
+    fi
+    local cfg="$r" tmp=""
+    [[ "$cfg" != "$config_file" ]] && tmp="$cfg"
+
     echo -e "$(show_status 'info') ${CYAN}Testing Nebula config: ${config_file}${RESET}"
     local output status
-    output=$("${NEBULA_BIN_PATH:-/usr/local/bin}/nebula" -test -config "$config_file" 2>&1)
+    output="$("$(nebula_bin)" -test -config "$cfg" 2>&1)"
     status=$?
+    [[ -n "$tmp" ]] && rm -f "$tmp"
     if [[ $status -eq 0 ]]; then
         echo -e "$(show_status 'success') ${GREEN}Nebula config is valid${RESET} $(get_icon 'validate')"
         return 0
@@ -757,27 +774,55 @@ readable_nebula_config() {
 # Function to show system information related to the Nebula service
 show_system_info() {
     local service_name; service_name=$(basename "${NEBULA_SERVICE:-nebula.service}")
-    local nebula_config="${NEBULA_DIR}/config.yml"
-    if systemctl is-active --quiet "$service_name"; then
-        echo -e "$(show_status 'success') ${BOLD}${YELLOW}Service: ${RESET}$(print_service_status "$service_name")"
-        echo -e "$(show_status 'success') ${BOLD}${YELLOW}Uptime:${RESET} $(date -ud@$(($(date +%s) - $(date -d"$(systemctl show "$service_name" --property=ActiveEnterTimestamp | cut -d'=' -f2)" +%s))) +%T | awk -F: '{print $1" hrs, "$2" min, "$3" sec"}')"
-        local interface ip_addr bind_host bind_port
-        interface=$(iface_from_config "$nebula_config")
-        ip_addr=$(iface_ip "$interface")
-        bind_host=$(awk '/listen:/,/port:/{if($1~/^host:/){gsub(/\r|\n|"/,"",$2);print $2}}' "$nebula_config")
-        bind_port=$(awk '/listen:/,/port:/{if($1~/^port:/){gsub(/\r|\n|"/,"",$2);print $2}}' "$nebula_config")
-        echo -e "$(show_status 'success') ${BOLD}${YELLOW}Network:${RESET} $ip_addr - $interface ($bind_host:$bind_port)"
-        echo -e -n "$(show_status 'success') ${BOLD}${YELLOW}State:${RESET} "
-        if grep -q '^ *am_lighthouse: true' "$nebula_config"; then
-            echo -e "Lighthouse"
-        else
-            echo -e "Client"
-        fi
-    else
+    local nebula_config="${NEBULA_DIR:-}/config.yml"
+
+    if ! systemctl is-active --quiet "$service_name"; then
         if check_nebula_installed; then
             echo -e "$(show_status 'error') ${BOLD}${YELLOW}Service: ${RESET}Not Running ($(print_service_status "$service_name"))"
         fi
+        return 0
     fi
+
+    echo -e "$(show_status 'success') ${BOLD}${YELLOW}Service: ${RESET}$(print_service_status "$service_name")"
+    echo -e "$(show_status 'success') ${BOLD}${YELLOW}Uptime:${RESET} $(date -ud@$(($(date +%s) - $(date -d"$(systemctl show "$service_name" --property=ActiveEnterTimestamp | cut -d'=' -f2)" +%s))) +%T | awk -F: '{print $1" hrs, "$2" min, "$3" sec"}')"
+
+    # The config is usually owned by the service user (nobody). Read a copy,
+    # asking for elevation (with the reason shown) only when needed.
+    local cfg="" tmp_cfg=""
+    if [[ -n "${NEBULA_DIR:-}" && -f "$nebula_config" ]]; then
+        local r; r="$(readable_nebula_config "$nebula_config")" || r=""
+        if [[ -n "$r" ]]; then
+            cfg="$r"
+            [[ "$cfg" != "$nebula_config" ]] && tmp_cfg="$cfg"
+        fi
+    fi
+
+    if [[ -z "$cfg" ]]; then
+        echo -e "$(show_status 'warning') ${BOLD}${YELLOW}Network:${RESET} ${GRAY}(config not readable - run with sudo or grant read access)${RESET}"
+        return 0
+    fi
+
+    local interface ip_addr bind_host bind_port port_note=""
+    interface=$(iface_from_config "$cfg")
+    ip_addr=$(iface_ip "$interface")
+    bind_host=$(awk '/listen:/,/port:/{if($1~/^host:/){gsub(/\r|\n|"/,"",$2);print $2}}' "$cfg")
+    bind_port=$(awk '/listen:/,/port:/{if($1~/^port:/){gsub(/\r|\n|"/,"",$2);print $2}}' "$cfg")
+    [[ -z "$bind_host" ]] && bind_host="0.0.0.0"
+    # listen.port: 0 means the OS assigns the port; show the effective one.
+    if [[ -z "$bind_port" || "$bind_port" == "0" ]]; then
+        local _p _s
+        read -r _p _s _ < <(resolve_listen_port "$cfg")
+        [[ -n "$_p" ]] && { bind_port="$_p"; port_note=" [$_s]"; }
+    fi
+    echo -e "$(show_status 'success') ${BOLD}${YELLOW}Network:${RESET} $ip_addr - $interface ($bind_host:$bind_port)$port_note"
+    echo -e -n "$(show_status 'success') ${BOLD}${YELLOW}State:${RESET} "
+    if grep -q '^ *am_lighthouse: true' "$cfg"; then
+        echo -e "Lighthouse"
+    else
+        echo -e "Client"
+    fi
+    [[ -n "$tmp_cfg" ]] && rm -f "$tmp_cfg"
+    return 0
 }
 
 ###################################################################

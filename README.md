@@ -30,7 +30,7 @@
 - 🏁 **Benchmarks** – `iperf3` server/client modes with custom overlay IPs (unprivileged).
 - 🩺 **Diagnostics** – one-shot view of TUN IP, listening UDP socket, and certificate expiry.
 - 🔌 **Listen-port aware** – reads `listen.port`, auto-detects OS-assigned ports (`port: 0`), and honors a configurable `default_port`.
-- 🖥 **whiptail-first UI** – curses menus via `whiptail`; `dialog` is used only as a last resort, with a plain-text fallback for headless runs.
+- 🖥 **Plain-first UI** – numbered menus by default (easy to debug/script), with a graphical `whiptail`-based picker used automatically for file/dir browsing when available; `NEBULA_UI=whiptail` forces the curses UI everywhere.
 - 📋 **Service orchestration** – manage all enabled servers, with per-server status.
 - ⏪ **Update Nebula with rollback** if download or config validation fails.
 - ⏰ **Auto-update scheduler** – via cron (`nebula-manager --auto-update-nebula`).
@@ -64,6 +64,7 @@ re-execs the real entrypoint.
 - `elevate() { [[ $EUID -eq 0 ]] && "$@" || sudo "$@"; }` — the single choke point for privilege escalation.
 - `path_requires_root()` classifies a target path; `ensure_dir()` elevates **only** when the nearest existing parent isn't writable by you.
 - Everything else (printing/signing certs, zipping bundles, pings, `iperf3`, `ss`) runs as you.
+- Reading a **service-owned** Nebula config (`/etc/nebula/config.yml`, often owned by `nobody`) goes through `readable_nebula_config()`: it uses cached `sudo` if available, otherwise asks once — showing the **reason and exact command** — before elevating. Used by the startup header, `diag`, and `check_nebula_config`.
 
 Privileged actions (the only ones that use `sudo`):
 `mkdir/chmod/write under system paths`, `mkdir -p /etc/nebula` + template download, systemd (`daemon-reload`, `enable`, `start/stop/restart/reload`), installing binaries into `bin_path`, and the self-update copy.
@@ -117,7 +118,7 @@ Nebula Manager checks for required tools on first run and prints an install
 command if any are missing (skippable via `ignore_dependency_check` in the conf).
 
 **Required:** `curl`, `wget`, `tar`, `jq`, `yq`, `systemd` (`systemctl`), `iputils-ping`
-**Optional:** `iperf3` (bandwidth tests), `whiptail` (**strongly preferred** for the TUI; `dialog` is a last resort), `zip` (client bundles; falls back to `tar.gz`)
+**Optional:** `iperf3` (bandwidth tests), `whiptail` (graphical file/dir picker; menus are plain by default), `zip` (client bundles; falls back to `tar.gz`)
 
 ### Install all dependencies
 
@@ -178,12 +179,19 @@ Existing stores (`~/keys/nebula`, the default, and the active server's `certs/`)
 are auto-detected and offered. **Browse** opens a directory browser
 (`whiptail --dselect`) or lets you type a path. Your pick is remembered.
 
+The **Certificates ▸ Workspace** menu later offers the same list (current store,
+any detected stores, default, server dir, custom) and, in plain mode, **also
+accepts a directory typed directly** at the prompt — so you can either enter a
+menu number or type the path you mean. If `--cert-dir`/`NEBULA_KEYS_DIR` is set
+it still wins over the saved selection, and the tool warns you when that happens.
+
 ---
 
 ## 🛠️ Usage
 
 Nebula Manager is **menu-driven first**. Run it and everything is selectable from
-the text-graphical TUI (whiptail menus). The same actions are also available as
+the numbered menus (plain text by default; file/dir pickers pop up graphically
+when `whiptail` is available). The same actions are also available as
 headless subcommands for scripting — see *Expert / scriptable* below.
 
 ### Interactive (the main way)
@@ -209,8 +217,9 @@ running Nebula), *Create config from template*, or *Browse for a config file* �
 then *Manage servers* to add your servers and *Reload & continue* to enter the
 main menu.
 
-Handy extras: `NEBULA_UI=plain nebula-manager` gives the classic numbered menus;
-`NEBULA_UI=dialog nebula-manager` forces dialog instead of whiptail.
+Handy extras: menus are **plain numbered** by default (easy to script and debug);
+file/directory browsing automatically uses `whiptail` when it is installed.
+`NEBULA_UI=whiptail nebula-manager` forces the curses UI for the menus too.
 
 ### Expert / scriptable (the same actions as the menus)
 
@@ -242,7 +251,7 @@ Handy extras: `NEBULA_UI=plain nebula-manager` gives the classic numbered menus;
 
 # Utilities
 ./nebula-manager paths                  # resolved config / key dirs + UI backend
-./nebula-manager ui                     # which UI backend is active (whiptail/dialog/plain)
+./nebula-manager ui                     # which UI backend is active (menu + browse)
 ./nebula-manager auto-update            # update Nebula to latest
 ./nebula-manager --version
 ```
@@ -266,7 +275,7 @@ Handy extras: `NEBULA_UI=plain nebula-manager` gives the classic numbered menus;
 | `NEBULA_MANAGER_REPO` | `owner/repo` used for update checks / templates (default: git `origin`) |
 | `NEBULA_MANAGER_REF` | Git ref (branch) used for update checks (default `main`) |
 | `NEBULA_MANAGER_DEFAULT_REPO` | Last-resort repo when neither env nor git `origin` is available (default `jordanhillis/nebula-manager`) |
-| `NEBULA_UI` | UI backend: `auto` (whiptail → dialog → plain), `whiptail`, `dialog`, `plain` |
+| `NEBULA_UI` | UI backend. Default (*unset*/`auto`) = **plain numbered menus**; `whiptail`/`dialog` are used automatically for file/dir browsing when available, or set one to force a curses UI everywhere |
 | `NEBULA_NO_PROMPT` | Set to `1` to never prompt; unreadable privileged files are skipped instead of read via sudo (used internally for state detection) |
 | `NEBULA_DEFAULT_PORT` | Fallback Nebula listen port for diagnostics (default `4242`) |
 
@@ -428,9 +437,11 @@ What it covers:
 | `tests/test_port.sh` | listen-port resolution: `listen.port` → auto-detect → `default_port` |
 | `tests/test_distro.sh` | distro detection + Arch/CachyOS package mapping; unknown distro no longer hard-fails |
 | `tests/test_workspace.sh` | certificate workspace selection + "already known" detection |
+| `tests/test_workspace_menu.sh` | workspace selector: detected stores listed, number *or* typed path accepted, invalid input re-prompts, env-override warning |
 | `tests/test_conf.sh` | config path resolution: user-first, `--config`/env override, bundled template + `config init` offline |
 | `tests/test_setup.sh` | Setup state summary (detected config/servers/workspace), `config_use_file` validation, `config remove` without sudo for user paths |
 | `tests/test_tui_menu.sh` | entrypoint Setup/bootstrap menu wiring (import/browse/delete/reload/exit) + the state-line refresh hook |
+| `tests/test_sysinfo.sh` | startup header reads a service-owned `config.yml` via the elevating path (no `Permission denied`) and degrades cleanly when unreadable |
 | `tests/test_template_online.sh` | optional (needs `NEBULA_TEST_ONLINE=1`) freshness check of the bundled template vs the repo |
 | `tests/test_update.sh` | update source resolution (origin/env) + no-downgrade version comparison |
 | `tests/test_realstore_readonly.sh` | uses a real cert store **read-only** (hashes unchanged, no `sudo`) |

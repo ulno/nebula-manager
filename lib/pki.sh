@@ -122,8 +122,17 @@ Where do your keys/certs (ca.crt, *.crt) live?"
         menu+=( "browse" "Browse for a directory..." )
         menu+=( "skip"   "Skip for now (use default)" )
 
-        choice="$(ui_menu "Certificate Workspace" "$reason" "${menu[@]}")" || choice="skip"
+        local rc
+        choice="$(ui_choose_or_path "Certificate Workspace" "$reason" "${menu[@]}")"; rc=$?
+        if (( rc == 2 )); then
+            reason="That was not a menu number or a directory.
+Pick one of the options, or type a directory path."
+            continue
+        elif (( rc != 0 )); then
+            choice="skip"
+        fi
         case "$choice" in
+            path:*)    CERT_DIR_SELECTED="${choice#path:}" ;;
             suggested) CERT_DIR_SELECTED="$suggested" ;;
             default)   CERT_DIR_SELECTED="$default_dir" ;;
             server)    CERT_DIR_SELECTED="${NEBULA_DIR}/${NEBULA_CERT_FOLDER:-certs}" ;;
@@ -147,33 +156,60 @@ Pick a directory, or one of the options below."
     log_success "Certificate workspace set to: ${CYAN}$CERT_DIR_SELECTED${RESET}"
 }
 
-# Interactive workspace selector (uses the whiptail/dialog/plain dispatcher).
+# Interactive workspace selector. Lists the current store, any detected stores,
+# the default and the server dir; also accepts a typed directory (plain mode).
 select_cert_workspace() {
-    local current default_dir saved custom choice
+    local current default_dir server_dir choice custom
     current="$(resolve_cert_dir)"
     default_dir="$(nebula_keys_default_dir)"
-    show_menu_header "$MENU_PATH" "Certificates" "Workspaces"
-    echo -e "${BOLD}${YELLOW}Active certificate workspace:${RESET} ${CYAN}$current${RESET}\n"
-    choice="$(ui_menu "Certificate Workspace" "Select a workspace:" \
-        "current"   "Use current: $current" \
-        "default"   "Use default user store: $default_dir" \
-        "server"    "Use this server's dir: ${NEBULA_DIR:-/etc/nebula}/${NEBULA_CERT_FOLDER:-certs}" \
-        "custom"    "Enter a custom path..." )" || return 0
+    server_dir="${NEBULA_DIR:-/etc/nebula}/${NEBULA_CERT_FOLDER:-certs}"
 
-    case "$choice" in
-        current) CERT_DIR_SELECTED="$current" ;;
-        default) CERT_DIR_SELECTED="$default_dir" ;;
-        server)  CERT_DIR_SELECTED="${NEBULA_DIR:-/etc/nebula}/${NEBULA_CERT_FOLDER:-certs}" ;;
-        custom)
-            custom="$(ui_input "Certificate Workspace" "Path to certificate store:" "${NEBULA_KEYS_DIR:-$default_dir}")" || return 0
-            [[ -z "$custom" ]] && return 0
-            CERT_DIR_SELECTED="$custom"
-            ;;
-        *) return 0 ;;
-    esac
+    while true; do
+        show_menu_header "$MENU_PATH" "Certificates" "Workspaces"
+        echo -e "${BOLD}${YELLOW}Active certificate workspace:${RESET} ${CYAN}$current${RESET}\n"
+
+        local -a menu=( "current" "Use current: $current" )
+        local c
+        while IFS= read -r c; do
+            [[ -n "$c" && "$c" != "$current" ]] && menu+=( "pick:$c" "Use detected store: $c" )
+        done < <(workspace_candidates)
+        menu+=(
+            "default" "Use default user store: $default_dir"
+            "server"  "Use this server's dir: $server_dir"
+            "custom"  "Enter a custom path..."
+        )
+
+        local rc
+        choice="$(ui_choose_or_path "Certificate Workspace" "Select a workspace (or type a directory):" "${menu[@]}")"; rc=$?
+        if (( rc == 2 )); then
+            log_error "Invalid choice - enter a menu number or a directory path."
+            continue
+        elif (( rc != 0 )); then
+            return 0
+        fi
+
+        case "$choice" in
+            path:*)  CERT_DIR_SELECTED="${choice#path:}" ;;
+            pick:*)  CERT_DIR_SELECTED="${choice#pick:}" ;;
+            current) CERT_DIR_SELECTED="$current" ;;
+            default) CERT_DIR_SELECTED="$default_dir" ;;
+            server)  CERT_DIR_SELECTED="$server_dir" ;;
+            custom)
+                custom="$(ui_input "Certificate Workspace" "Path to certificate store:" "${NEBULA_KEYS_DIR:-$default_dir}")" || return 0
+                [[ -z "$custom" ]] && continue
+                CERT_DIR_SELECTED="$custom"
+                ;;
+            *) return 0 ;;
+        esac
+        break
+    done
+
     save_cert_dir_selection "$CERT_DIR_SELECTED"
     ensure_dir "$CERT_DIR_SELECTED" || { log_error "Could not create $CERT_DIR_SELECTED"; return 1; }
     log_success "Active certificate workspace set to: ${CYAN}$CERT_DIR_SELECTED${RESET}"
+    if [[ -n "${CERT_DIR_OVERRIDE:-}" || -n "${NEBULA_KEYS_DIR:-}" ]]; then
+        log_warn "--cert-dir / NEBULA_KEYS_DIR is set and overrides this saved selection."
+    fi
 }
 
 ###################################################################
