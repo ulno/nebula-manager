@@ -101,7 +101,7 @@ need_root_for() {
 ##################### Arch / packages / deps ######################
 ###################################################################
 
-declare -A PKG_BASE=(
+declare -gA PKG_BASE=(
   [awk]="gawk"
   [curl]="curl"
   [find]="findutils"
@@ -117,11 +117,11 @@ declare -A PKG_BASE=(
   [sha256sum]="coreutils"
   [iperf3]="iperf3"
 )
-declare -A PKG_RH_OVERRIDE=(
+declare -gA PKG_RH_OVERRIDE=(
   [ping]="iputils"
 )
 # Arch/CachyOS package names that differ from the Debian defaults.
-declare -A PKG_ARCH_OVERRIDE=(
+declare -gA PKG_ARCH_OVERRIDE=(
   [ping]="iputils"
   [whiptail]="libnewt"
 )
@@ -1015,6 +1015,113 @@ select_nebula_server() {
     clear
 }
 
+###################################################################
+################ Self-update / remote resolution ##################
+###################################################################
+# The update check follows the repo this copy came from, so a fork checks
+# itself instead of upstream:
+#   $NEBULA_MANAGER_REPO (owner/repo)  ->  git 'origin'  ->  built-in upstream.
+# An update is only offered when the published version is strictly NEWER.
+
+_normalize_repo_slug() {
+    local url="$1"
+    url="${url%.git}"
+    url="${url#git@github.com:}"
+    url="${url#ssh://git@github.com/}"
+    url="${url#https://github.com/}"
+    url="${url#http://github.com/}"
+    url="${url#github.com/}"
+    printf '%s' "$url"
+}
+
+manager_remote_repo() {
+    if [[ -n "${NEBULA_MANAGER_REPO:-}" ]]; then printf '%s' "$NEBULA_MANAGER_REPO"; return 0; fi
+    local url=""
+    if [[ -n "${MANAGER_ROOT:-}" && -d "${MANAGER_ROOT}/.git" ]] && command -v git >/dev/null 2>&1; then
+        url="$(git -C "$MANAGER_ROOT" remote get-url origin 2>/dev/null)"
+    fi
+    if [[ -n "$url" ]]; then
+        local slug; slug="$(_normalize_repo_slug "$url")"
+        case "$slug" in */*) printf '%s' "$slug"; return 0 ;; esac
+    fi
+    printf '%s' "${NEBULA_MANAGER_DEFAULT_REPO:-jordanhillis/nebula-manager}"
+}
+
+manager_remote_ref() { printf '%s' "${NEBULA_MANAGER_REF:-main}"; }
+
+# Populate the *_URL globals (and the version cache) from the resolved repo/ref.
+init_remote_urls() {
+    local repo ref base safe
+    repo="$(manager_remote_repo)"
+    ref="$(manager_remote_ref)"
+    base="https://raw.githubusercontent.com/${repo}/refs/heads/${ref}"
+    safe="$(printf '%s' "$repo" | tr '/' '_')"
+    REPO_SLUG="$repo"
+    REPO_REF="$ref"
+    REPO_BASE="$base"
+    SERVER_CONF_URL="${base}/nebula-manager.conf"
+    SCRIPT_URL="${base}/nebula-manager"
+    VERSION_URL="${base}/latest_version.txt"
+    RELEASE_PAGE="https://github.com/${repo}"
+    # Key the cache by repo so a fork never reuses upstream's cached version.
+    VERSION_CACHE_FILE="/tmp/nebula-manager-version-${safe}.cache"
+    export REPO_SLUG REPO_REF REPO_BASE SERVER_CONF_URL SCRIPT_URL VERSION_URL RELEASE_PAGE VERSION_CACHE_FILE
+}
+
+# version_gt <a> <b> -> success when a > b (version-sort aware: 1.10 > 1.9)
+version_gt() {
+    [[ "$1" == "$2" ]] && return 1
+    [[ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n1)" == "$1" ]]
+}
+
+# update_available <local> <remote> -> success only when remote is strictly newer
+update_available() { version_gt "$2" "$1"; }
+
+# Install an update. Git checkouts are never auto-clobbered (you may have local
+# work); file installs fetch the entrypoint + modules with checksum checking.
+perform_manager_update() {
+    local latest="$1"
+    if [[ -n "${MANAGER_ROOT:-}" && -d "${MANAGER_ROOT}/.git" ]] && command -v git >/dev/null 2>&1; then
+        log_warn "This is a git checkout; update it from your remote to preserve local changes:"
+        echo -e "    ${CYAN}git -C \"$MANAGER_ROOT\" pull --ff-only${RESET}"
+        return 1
+    fi
+
+    local tmp; tmp="$(mktemp -d)"
+    local entry="$tmp/nebula-manager" sum="$tmp/nebula-manager.sha256"
+    curl -fsSL "$SCRIPT_URL" -o "$entry" || { log_error "Download failed."; rm -rf "$tmp"; return 1; }
+    curl -fsSL "${SCRIPT_URL}.sha256" -o "$sum" || { log_error "Failed to fetch checksum."; rm -rf "$tmp"; return 1; }
+    local expected actual
+    expected="$(awk '$2=="nebula-manager"{print $1}' "$sum")"
+    actual="$(sha256sum "$entry" | awk '{print $1}')"
+    if [[ -z "$expected" || "$expected" != "$actual" ]]; then
+        log_error "Checksum mismatch. Update aborted."
+        log_info "Expected: ${expected:-<none>}"
+        log_info "Actual:   $actual"
+        rm -rf "$tmp"
+        return 1
+    fi
+
+    mkdir -p "$tmp/lib"
+    local m
+    for m in ui pki bench system; do
+        curl -fsSL "${REPO_BASE}/lib/${m}.sh" -o "$tmp/lib/${m}.sh" \
+            || { log_error "Failed to download lib/${m}.sh"; rm -rf "$tmp"; return 1; }
+    done
+
+    local target="${SCRIPT_PATH:-$0}" libdir="${MANAGER_LIB_DIR:-}"
+    if path_requires_root "$target"; then
+        elevate cp "$entry" "$target" && elevate chmod +x "$target"
+        [[ -n "$libdir" ]] && elevate cp "$tmp/lib/"*.sh "$libdir/"
+    else
+        cp "$entry" "$target" && chmod +x "$target"
+        [[ -n "$libdir" ]] && cp "$tmp/lib/"*.sh "$libdir/"
+    fi
+    rm -rf "$tmp"
+    log_success "Updated to version v$latest. Please rerun."
+    return 0
+}
+
 check_script_update() {
   [[ "${DISABLE_VERSION_CHECK:-false}" == true ]] && return
   local now last_check_age latest_version
@@ -1028,39 +1135,32 @@ check_script_update() {
     fi
   fi
   if [[ -z "$latest_version" ]]; then
-    latest_version=$(curl -fsSL "$VERSION_URL") || { log_error "Could not fetch latest version info."; return; }
+    latest_version=$(curl -fsSL "$VERSION_URL" 2>/dev/null) || {
+      log_info "Could not fetch version info from ${REPO_SLUG:-$VERSION_URL}."
+      return
+    }
+    latest_version="$(printf '%s' "$latest_version" | tr -d '[:space:]')"
+    if [[ ! "$latest_version" =~ ^[0-9] ]]; then
+      log_info "Unexpected version data from $VERSION_URL."
+      return
+    fi
     echo "$latest_version" > "$VERSION_CACHE_FILE"
   fi
-  if [[ "$latest_version" != "$MANAGER_VERSION" ]]; then
+
+  if [[ "$latest_version" == "$MANAGER_VERSION" ]]; then
+    return
+  fi
+  if update_available "$MANAGER_VERSION" "$latest_version"; then
     echo -e "$(show_status 'warning') $(get_icon 'package')${YELLOW}Update available for ${BOLD}${ORANGE}Nebula Manager${RESET}${YELLOW}: v$latest_version (you have ${RED}v$MANAGER_VERSION${YELLOW})${RESET}"
     echo -e "$(show_status 'info') $(get_icon 'link')${BLUE}Release notes: $RELEASE_PAGE/releases${RESET}"
     read -rp "$(show_status 'question') Do you want to update to the latest version? [y/N]: " answer
     case "$answer" in
-      [Yy]*)
-        local tmp_script="/tmp/nebula-manager-update.sh" tmp_checksum expected actual
-        tmp_checksum="${tmp_script}.sha256"
-        curl -fsSL "$SCRIPT_URL" -o "$tmp_script" || { log_error "Download failed."; return; }
-        curl -fsSL "${SCRIPT_URL}.sha256" -o "$tmp_checksum" || { log_error "Failed to fetch checksum."; return; }
-        expected=$(awk '{print $1}' "$tmp_checksum")
-        actual=$(sha256sum "$tmp_script" | awk '{print $1}')
-        if [[ "$expected" == "$actual" ]]; then
-          if path_requires_root "$0"; then
-            elevate cp "$tmp_script" "$0" && elevate chmod +x "$0"
-          else
-            cp "$tmp_script" "$0" && chmod +x "$0"
-          fi
-          log_success "Updated to version v$latest_version. Please rerun the script."
-          rm -f "$tmp_checksum"
-          exit 0
-        else
-          rm -f "$tmp_script" "$tmp_checksum"
-          log_error "Checksum mismatch. Update aborted."
-          log_info "Expected: $expected"
-          log_info "Actual:   $actual"
-        fi
-        ;;
+      [Yy]*) perform_manager_update "$latest_version" && exit 0 ;;
       *) log_info "Continuing with current version v$MANAGER_VERSION" ;;
     esac
+  else
+    # Local build is newer than the published one (fork ahead / stale upstream).
+    log_info "Local v$MANAGER_VERSION is newer than ${REPO_SLUG:-remote} v$latest_version; no update needed."
   fi
 }
 
@@ -1203,7 +1303,7 @@ _edit_firewall_rule() {
     echo -e "${YELLOW}Instructions:${RESET} Press Enter to skip a setting, or enter '-' to delete a field (except for port and proto)."
     local field current input
     for field in port proto host cidr local_cidr; do
-        current=$(yq -r "$prefix[$index].$field // \"\"" "$config_file")
+        current=$(yq -r "${prefix}[${index}].${field} // \"\"" "$config_file")
         input=""
         while true; do
             printf "${YELLOW}%s${RESET} [${CYAN}%s${RESET}]: " "${rule_fields[$field]}" "$current"
@@ -1216,7 +1316,7 @@ _edit_firewall_rule() {
                 if [[ "$field" == "port" || "$field" == "proto" ]]; then
                     log_error "Cannot delete required field: $field"; continue
                 else
-                    yq -i -y "del($prefix[$index].$field)" "$config_file"; break
+                    yq -i -y "del(${prefix}[${index}].${field})" "$config_file"; break
                 fi
             fi
             case "$field" in
@@ -1228,23 +1328,23 @@ _edit_firewall_rule() {
             log_error "Invalid ${field}. Try again."
         done
         if [[ "$input" == "-" ]]; then
-            yq -i -y "del($prefix[$index].$field)" "$config_file"
+            yq -i -y "del(${prefix}[${index}].${field})" "$config_file"
         elif [[ -n "$input" ]]; then
-            yq -i -y "$prefix[$index].$field = \"$input\"" "$config_file"
+            yq -i -y "${prefix}[${index}].${field} = \"$input\"" "$config_file"
         fi
     done
-    local current_groups; current_groups=$(yq -r "$prefix[$index].groups // [] | join(\", \")" "$config_file")
+    local current_groups; current_groups=$(yq -r "${prefix}[${index}].groups // [] | join(\", \")" "$config_file")
     printf "${YELLOW}%s${RESET} [${CYAN}%s${RESET}]: " "${rule_fields[groups]}" "$current_groups"
     read input
     if [[ "$input" == "-" ]]; then
-        yq -i -y "del($prefix[$index].groups)" "$config_file"
+        yq -i -y "del(${prefix}[${index}].groups)" "$config_file"
     elif [[ -n "$input" ]]; then
-        yq -i -y "$prefix[$index].groups = []" "$config_file"
+        yq -i -y "${prefix}[${index}].groups = []" "$config_file"
         local -a groups; IFS=',' read -ra groups <<< "$input"
         local g
         for g in "${groups[@]}"; do
             g=$(echo "$g" | xargs)
-            [[ -n "$g" ]] && yq -i -y "$prefix[$index].groups += [\"$g\"]" "$config_file"
+            [[ -n "$g" ]] && yq -i -y "${prefix}[${index}].groups += [\"$g\"]" "$config_file"
         done
     fi
     check_nebula_config "$NEBULA_DIR/config.yml" "error"

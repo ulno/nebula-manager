@@ -211,6 +211,8 @@ Configuration (validate/edit/firewall), Connectivity, Benchmarks, and Maintenanc
 |---|---|
 | `NEBULA_KEYS_DIR` | Certificate workspace (2nd precedence, after `--cert-dir`) |
 | `NEBULA_MANAGER_LIB` | Override the `lib/` module directory |
+| `NEBULA_MANAGER_REPO` | `owner/repo` used for update checks / templates (default: git `origin`) |
+| `NEBULA_MANAGER_REF` | Git ref (branch) used for update checks (default `main`) |
 | `NEBULA_UI` | UI backend override (`auto`, `whiptail`, `dialog`, `plain`) |
 | `NEBULA_DEFAULT_PORT` | Fallback Nebula listen port for diagnostics (default `4242`) |
 
@@ -313,6 +315,7 @@ What it covers:
 | `tests/test_resolve_dir.sh` | `--cert-dir` > `NEBULA_KEYS_DIR` > saved selection > legacy dir > default |
 | `tests/test_port.sh` | listen-port resolution: `listen.port` → auto-detect → `default_port` |
 | `tests/test_distro.sh` | distro detection + Arch/CachyOS package mapping; unknown distro no longer hard-fails |
+| `tests/test_update.sh` | update source resolution (origin/env) + no-downgrade version comparison |
 | `tests/test_realstore_readonly.sh` | uses a real cert store **read-only** (hashes unchanged, no `sudo`) |
 | `tests/test_cli.sh` | CLI parsing, flag precedence, usage/exit codes, end-to-end unprivileged PKI |
 | `tests/pki.bats` | BATS mirror of the core unprivileged-PKI guarantees |
@@ -374,6 +377,12 @@ Looking for more answers? Check the [Full FAQ on GitHub Wiki »](https://github.
   Set `default_port` to your usual port (e.g. `4545`) to avoid ambiguity.
 - **Systemd (not containers), for now.** The tool assumes Nebula runs as a host
   systemd unit. Pod/container support is a TODO (see below).
+- **Update checks follow your source repo, not upstream.** The version check and
+  self-update resolve the repo as `NEBULA_MANAGER_REPO` → git `origin` → built-in
+  upstream (`jordanhillis/nebula-manager`), so a fork checks itself. An update is
+  only offered when the published version is **strictly newer** (semantic
+  comparison), never as a downgrade. Git checkouts are never auto-overwritten —
+  the tool tells you to `git pull` instead.
 
 ---
 

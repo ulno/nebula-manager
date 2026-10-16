@@ -23,15 +23,14 @@ set -o pipefail
 ###################################################################
 MANAGER_VERSION="2.0.0"
 SERVER_CONF="${SERVER_CONF:-/etc/nebula/nebula-manager.conf}"   # Nebula Manager conf file
-SERVER_CONF_URL="https://raw.githubusercontent.com/jordanhillis/nebula-manager/refs/heads/main/nebula-manager.conf"
 NEBULA_TEMPLATE_URL="https://raw.githubusercontent.com/slackhq/nebula/refs/heads/master/examples/config.yml"
 NEBULA_API_RELEASES_URL="https://api.github.com/repos/slackhq/nebula/releases/latest"
 MENU_PATH="Main Menu"
-SCRIPT_URL="https://raw.githubusercontent.com/jordanhillis/nebula-manager/main/nebula-manager"
-VERSION_URL="https://raw.githubusercontent.com/jordanhillis/nebula-manager/main/latest_version.txt"
-RELEASE_PAGE="https://github.com/jordanhillis/nebula-manager"
-VERSION_CACHE_FILE="/tmp/nebula-manager-version.cache"
 VERSION_CACHE_TTL_SECONDS=$((6 * 3600))
+# SERVER_CONF_URL / SCRIPT_URL / VERSION_URL / RELEASE_PAGE / REPO_SLUG and
+# VERSION_CACHE_FILE are derived from our source repo at runtime by
+# init_remote_urls() (after the modules load), so forks check themselves
+# instead of always checking upstream. Override with NEBULA_MANAGER_REPO.
 MANAGER_ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
 AUTO_UPDATE_CMD="$SCRIPT_PATH --auto-update-nebula"
@@ -76,6 +75,10 @@ for _mod in ui pki bench system; do
     fi
 done
 unset _mod
+
+# Resolve the repo this copy came from (env override -> git origin -> upstream)
+# and derive the URLs used for config templates, version checks and updates.
+init_remote_urls
 
 ###################################################################
 ############################## TUI #################################
@@ -166,6 +169,8 @@ Commands:
 Environment:
   NEBULA_KEYS_DIR      Certificate workspace (2nd precedence, after --cert-dir)
   NEBULA_MANAGER_LIB   Override the lib/ directory location
+  NEBULA_MANAGER_REPO  owner/repo to use for update checks (default: git origin)
+  NEBULA_MANAGER_REF   branch to use for update checks (default: main)
   NEBULA_UI            UI backend override
 EOF
 }
@@ -175,6 +180,7 @@ print_paths() {
     printf 'cert-dir:  %s\n' "$(resolve_cert_dir)"
     printf 'bin-path:  %s\n' "$NEBULA_BIN_PATH"
     printf 'lib-dir:   %s\n' "$MANAGER_LIB_DIR"
+    printf 'update-repo: %s@%s\n' "${REPO_SLUG:-jordanhillis/nebula-manager}" "${REPO_REF:-main}"
 }
 
 # Consume global flags, leaving the (sub)command + its args in REMAINING_ARGS.

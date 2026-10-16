@@ -253,9 +253,9 @@ udp_listeners_on_port() {
     local port="$1" hex
     hex=$(printf '%04X' "$port" 2>/dev/null)
     if command -v ss >/dev/null 2>&1; then
-        ss -lunp 2>/dev/null | grep -E "[:.]$port[[:space:]]" || true
+        ss -lunp 2>/dev/null | grep -E "[:.]${port}[[:space:]]" || true
     elif command -v netstat >/dev/null 2>&1; then
-        netstat -lunp 2>/dev/null | grep -E "[:.]$port[[:space:]]" || true
+        netstat -lunp 2>/dev/null | grep -E "[:.]${port}[[:space:]]" || true
     elif [[ -r /proc/net/udp ]]; then
         awk -v h="$hex" 'NR>1 { split($2,a,":"); if (toupper(a[2])==h) print $0 }' /proc/net/udp || true
     fi
@@ -298,7 +298,7 @@ diagnostics_view() {
     port="${port:-${NEBULA_DEFAULT_PORT:-4242}}"
     # When the port is OS-assigned and we couldn't detect it, offer interactive
     # users a one-shot elevated detection (opt-in; never prompts in scripts).
-    if [[ "$port_src" == "default" && -t 0 && ! is_root ]] && command -v sudo >/dev/null 2>&1; then
+    if [[ "$port_src" == "default" && -t 0 ]] && ! is_root && command -v sudo >/dev/null 2>&1; then
         read -rp "$(show_status 'question') Listen port is OS-assigned/unknown. Detect it with sudo? [y/N]: " _d
         if [[ "$_d" =~ ^[Yy]$ ]]; then
             local _ep; _ep="$(autodetect_nebula_port_elevated)"
