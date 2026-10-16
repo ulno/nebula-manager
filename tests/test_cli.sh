@@ -14,8 +14,9 @@ assert_contains "--help prints usage"     "$("$NM" --help)"    "Usage:"
 
 # --- paths subcommand (also exercises directory resolution through the entry) ---
 out="$("$NM" paths)"
-assert_contains "default config path" "$out" "config:    /etc/nebula/nebula-manager.conf"
+assert_contains "default config path is per-user" "$out" "config:    $XDG_CONFIG_HOME/nebula-manager/nebula-manager.conf"
 assert_contains "default cert dir is per-user" "$out" "cert-dir:  $XDG_DATA_HOME/nebula-manager/keys"
+assert_eq "paths needs no sudo" "$(sudo_count)" "0"
 
 out="$("$NM" --cert-dir="$SANDBOX/cli" paths)"
 assert_contains "--cert-dir override parsed" "$out" "cert-dir:  $SANDBOX/cli"
@@ -25,6 +26,9 @@ assert_contains "--cert-dir parsed after command" "$out" "cert-dir:  $SANDBOX/cl
 
 out="$("$NM" --config="$SANDBOX/my.conf" paths)"
 assert_contains "--config override parsed" "$out" "config:    $SANDBOX/my.conf"
+
+out="$(NEBULA_MANAGER_CONF="$SANDBOX/env.conf" "$NM" paths)"
+assert_contains "NEBULA_MANAGER_CONF honoured" "$out" "config:    $SANDBOX/env.conf"
 
 out="$(NEBULA_KEYS_DIR="$SANDBOX/env" "$NM" paths)"
 assert_contains "NEBULA_KEYS_DIR honoured via entry" "$out" "cert-dir:  $SANDBOX/env"

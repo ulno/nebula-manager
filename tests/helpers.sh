@@ -44,6 +44,9 @@ harness_init() {
     : > "$SUDO_LOG"
     cat > "$SANDBOX/bin/sudo" <<'MOCK'
 #!/usr/bin/env bash
+# Pretend there are no cached credentials for -n probes, so elevate() prints its
+# reason/command notice; don't record probes as real invocations.
+if [[ "${1:-}" == "-n" ]]; then exit 1; fi
 printf 'sudo %s\n' "$*" >> "${SUDO_LOG:?SUDO_LOG not set}"
 if [[ "${SUDO_FAIL:-0}" == "1" ]]; then
     echo "sudo: mock failure" >&2
@@ -66,6 +69,8 @@ MOCK
     [[ -n "$cert_bin" ]] && export NEBULA_BIN_PATH="$(dirname "$cert_bin")"
 
     # Load the modules under test (same shell so we can call functions).
+    # MANAGER_LIB_DIR simulates the installed layout so template/config helpers work.
+    export MANAGER_LIB_DIR="$REPO_ROOT/lib"
     # shellcheck source=/dev/null
     source "$REPO_ROOT/lib/ui.sh"
     # shellcheck source=/dev/null

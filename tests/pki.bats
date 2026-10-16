@@ -18,6 +18,7 @@ setup() {
     : > "$SUDO_LOG"
     cat > "$SANDBOX/bin/sudo" <<'MOCK'
 #!/usr/bin/env bash
+if [[ "${1:-}" == "-n" ]]; then exit 1; fi
 printf 'sudo %s\n' "$*" >> "${SUDO_LOG:?}"
 exit 0
 MOCK

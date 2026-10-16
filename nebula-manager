@@ -22,7 +22,12 @@ set -o pipefail
 ########################## Configuration ##########################
 ###################################################################
 MANAGER_VERSION="2.0.0"
-SERVER_CONF="${SERVER_CONF:-/etc/nebula/nebula-manager.conf}"   # Nebula Manager conf file
+# The nebula-manager.conf path is resolved after the modules load by
+# resolve_server_conf(): --config / $NEBULA_MANAGER_CONF -> existing /etc
+# config -> per-user config. The per-user default avoids needing root on
+# first run just to obtain a config.
+CONF_OVERRIDE="${SERVER_CONF:-${NEBULA_MANAGER_CONF:-}}"
+SERVER_CONF=""
 NEBULA_TEMPLATE_URL="https://raw.githubusercontent.com/slackhq/nebula/refs/heads/master/examples/config.yml"
 NEBULA_API_RELEASES_URL="https://api.github.com/repos/slackhq/nebula/releases/latest"
 MENU_PATH="Main Menu"
@@ -131,6 +136,8 @@ tui_main() {
     banner
     check_script_update
     select_nebula_server
+    # Offer a certificate workspace if none is known yet (first run).
+    first_run_workspace_setup
     banner
     top_header
     main_menu
@@ -163,15 +170,21 @@ Commands:
   cert list|expiry|remove|bundle  Certificate operations
   bench server|client [...]       iperf3 benchmarks
   diag                            Diagnostics (TUN IP, UDP socket, cert expiry)
+  config path|init|refresh        Manage nebula-manager.conf (offline template)
   paths                           Print resolved config & key directories
   auto-update                     Update Nebula to the latest release
 
 Environment:
   NEBULA_KEYS_DIR      Certificate workspace (2nd precedence, after --cert-dir)
   NEBULA_MANAGER_LIB   Override the lib/ directory location
+  NEBULA_MANAGER_CONF  Path to nebula-manager.conf (alias for --config)
   NEBULA_MANAGER_REPO  owner/repo to use for update checks (default: git origin)
   NEBULA_MANAGER_REF   branch to use for update checks (default: main)
   NEBULA_UI            UI backend override
+
+Update checks follow your repo (git origin -> NEBULA_MANAGER_REPO -> upstream).
+To check the upstream project explicitly:
+  NEBULA_MANAGER_REPO=jordanhillis/nebula-manager nebula-manager
 EOF
 }
 
@@ -188,8 +201,8 @@ REMAINING_ARGS=()
 parse_global_flags() {
     while (($#)); do
         case "$1" in
-            --config=*)     SERVER_CONF="${1#*=}" ;;
-            --config)       shift; SERVER_CONF="${1:-}" ;;
+            --config=*)     CONF_OVERRIDE="${1#*=}" ;;
+            --config)       shift; CONF_OVERRIDE="${1:-}" ;;
             --cert-dir=*)   CERT_DIR_OVERRIDE="${1#*=}" ;;
             --cert-dir)     shift; CERT_DIR_OVERRIDE="${1:-}" ;;
             --keys-dir=*)   NEBULA_KEYS_DIR="${1#*=}" ;;
@@ -206,6 +219,7 @@ parse_global_flags() {
 
 main() {
     parse_global_flags "$@"
+    SERVER_CONF="$(resolve_server_conf)"
     set -- ${REMAINING_ARGS[@]+"${REMAINING_ARGS[@]}"}
     local cmd="${1:-}"
 
@@ -219,6 +233,7 @@ main() {
         cert|pki)       shift; pki_cli "$@" ;;
         bench)          shift; bench_cli "$@" ;;
         diag|diagnose)  shift; diag_cli "$@" ;;
+        config|conf)    shift; config_cli "$@" ;;
         auto-update)
             load_global_config
             AUTO_UPDATE=true

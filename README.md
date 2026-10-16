@@ -23,7 +23,7 @@
 - 🔓 **Least-privilege by default** – runs as your user; granular `sudo` on demand.
 - 🚀 **Install & Update Nebula** from official releases (arch/OS aware).
 - 🛡 **Certificate management** – list, generate, view, bundle, check expiry, and **revoke with reasons**.
-- 🗝️ **Configurable certificate workspaces** – keep PKI in a user-owned store, switch at runtime.
+- 🗝️ **Configurable certificate workspaces** – keep PKI in a user-owned store, switch at runtime, auto-detect existing stores.
 - 📝 **Configuration management** – interactively edit `config.yml` with validation to prevent bad deploys.
 - 🔥 **Firewall management** – control inbound/outbound rules, defaults, and conntrack settings.
 - 📡 **Connectivity tools** – multi-node reachability & latency table.
@@ -34,7 +34,7 @@
 - 📋 **Service orchestration** – manage all enabled servers, with per-server status.
 - ⏪ **Update Nebula with rollback** if download or config validation fails.
 - ⏰ **Auto-update scheduler** – via cron (`nebula-manager --auto-update-nebula`).
-- 🆕 **First-run setup** – auto-downloads and installs a config template if none exists.
+- 🆕 **First-run setup** – if no config is found, prompts to **create (offline template)**, **browse**, or **download**.
 - 🖥 **Interactive TUI _and_ headless subcommands** – script it your way.
 
 ---
@@ -50,6 +50,7 @@ lib/
   pki.sh                # CA, signing, inspection, workspaces, client bundling
   bench.sh              # iperf3 server/client, connectivity, diagnostics
   system.sh             # elevate()/sudo, systemd, /etc/nebula, install/update
+  nebula-manager.conf.template  # bundled config template (offline first-run)
 tests/                  # standalone mock-driven Bash test harness
 run_tests.sh            # test runner (also: make test)
 ```
@@ -87,8 +88,8 @@ cd nebula-manager
 mkdir -p nebula-manager/lib && cd nebula-manager
 base=https://raw.githubusercontent.com/jordanhillis/nebula-manager/refs/heads/main
 curl -fsSL "$base/nebula-manager" -o nebula-manager
-for m in ui pki bench system; do
-  curl -fsSL "$base/lib/$m.sh" -o "lib/$m.sh"
+for m in ui.sh pki.sh bench.sh system.sh nebula-manager.conf.template; do
+  curl -fsSL "$base/lib/$m" -o "lib/$m"
 done
 chmod +x nebula-manager
 ./nebula-manager
@@ -101,7 +102,7 @@ Use **Maintenance ▸ Install Script to System** inside the TUI, or copy manuall
 ```bash
 sudo install -d /usr/local/bin /usr/local/lib/nebula-manager/lib
 sudo install -m755 nebula-manager /usr/local/bin/nebula-manager
-sudo cp lib/*.sh /usr/local/lib/nebula-manager/lib/
+sudo cp lib/*.sh lib/*.template /usr/local/lib/nebula-manager/lib/
 ```
 
 The entrypoint auto-discovers `lib/` in the following order:
@@ -158,6 +159,24 @@ Use **Certificates ▸ Switch Certificate Workspace** to point the tool at a
 different store; the choice is persisted in
 `$XDG_CONFIG_HOME/nebula-manager/certdir`.
 
+### First run
+
+If no workspace is determined yet (no `--cert-dir`, no `NEBULA_KEYS_DIR`, no saved
+selection, and no populated server cert dir), the TUI offers to pick one:
+
+```
+[!] No certificate workspace selected yet.
+      1. Use existing store: /home/you/keys/nebula
+      2. Use default store: /home/you/.local/share/nebula-manager/keys
+      3. Use server dir: /etc/nebula/certs
+      4. Browse for a certificate directory...
+      5. Skip for now (use default)
+```
+
+Existing stores (`~/keys/nebula`, the default, and the active server's `certs/`)
+are auto-detected and offered. **Browse** opens a directory browser
+(`whiptail --dselect`) or lets you type a path. Your pick is remembered.
+
 ---
 
 ## 🛠️ Usage
@@ -179,6 +198,11 @@ Configuration (validate/edit/firewall), Connectivity, Benchmarks, and Maintenanc
 ./nebula-manager ca --name my-ca --duration 999999h --cert-dir ~/keys/nebula
 ./nebula-manager sign --name host1 --ip 10.42.0.2/24 --groups servers \
                       --duration 720 --cert-dir ~/keys/nebula
+
+# Config management (offline template lives in lib/)
+./nebula-manager config path
+./nebula-manager config init          # create ~/.config/nebula-manager/nebula-manager.conf
+./nebula-manager config refresh       # pull the latest template from your repo
 
 # Inspect / bundle
 ./nebula-manager cert list
@@ -211,8 +235,10 @@ Configuration (validate/edit/firewall), Connectivity, Benchmarks, and Maintenanc
 |---|---|
 | `NEBULA_KEYS_DIR` | Certificate workspace (2nd precedence, after `--cert-dir`) |
 | `NEBULA_MANAGER_LIB` | Override the `lib/` module directory |
+| `NEBULA_MANAGER_CONF` | Path to `nebula-manager.conf` (alias for `--config`) |
 | `NEBULA_MANAGER_REPO` | `owner/repo` used for update checks / templates (default: git `origin`) |
 | `NEBULA_MANAGER_REF` | Git ref (branch) used for update checks (default `main`) |
+| `NEBULA_MANAGER_DEFAULT_REPO` | Last-resort repo when neither env nor git `origin` is available (default `jordanhillis/nebula-manager`) |
 | `NEBULA_UI` | UI backend override (`auto`, `whiptail`, `dialog`, `plain`) |
 | `NEBULA_DEFAULT_PORT` | Fallback Nebula listen port for diagnostics (default `4242`) |
 
@@ -220,10 +246,38 @@ Configuration (validate/edit/firewall), Connectivity, Benchmarks, and Maintenanc
 
 ## 🧩 Configuration: `nebula-manager.conf`
 
-Nebula Manager reads an **INI-style** config (with sections) located by default at
-`/etc/nebula/nebula-manager.conf`. If none is found it downloads the template.
+Nebula Manager reads an **INI-style** config (with sections). The path is
+resolved as `--config` / `$NEBULA_MANAGER_CONF` → an existing
+`/etc/nebula/nebula-manager.conf` → `$XDG_CONFIG_HOME/nebula-manager/nebula-manager.conf`.
 
-Change the default location without editing the script:
+### First run
+
+If no config is found, the tool does **not** silently download anything. It asks:
+
+```
+[!] No configuration found at: /home/you/.config/nebula-manager/nebula-manager.conf
+    What would you like to do?
+      1. Create one at ~/.config/nebula-manager/nebula-manager.conf (from the bundled template)
+      2. Use an existing config file (browse)...
+      3. Download the latest template from <repo>
+      4. Cancel
+```
+
+- **Create** copies the bundled template that ships in `lib/`
+  (`lib/nebula-manager.conf.template`) — **offline, no root**.
+- **Browse** opens a file browser (`whiptail --fselect`) or lets you type a path.
+- **Download** fetches the newest template from your source repo on request only.
+
+### Managing the config headlessly
+
+```bash
+./nebula-manager config path                 # print the resolved config path
+./nebula-manager config init [--force]       # create it from the bundled template
+./nebula-manager config init --config /etc/nebula/nebula-manager.conf
+./nebula-manager config refresh              # download the latest template
+```
+
+You can always point at any file with `--config`:
 
 ```bash
 ./nebula-manager --config=/path/to/nebula-manager.conf
@@ -315,6 +369,9 @@ What it covers:
 | `tests/test_resolve_dir.sh` | `--cert-dir` > `NEBULA_KEYS_DIR` > saved selection > legacy dir > default |
 | `tests/test_port.sh` | listen-port resolution: `listen.port` → auto-detect → `default_port` |
 | `tests/test_distro.sh` | distro detection + Arch/CachyOS package mapping; unknown distro no longer hard-fails |
+| `tests/test_workspace.sh` | certificate workspace selection + "already known" detection |
+| `tests/test_conf.sh` | config path resolution: user-first, `--config`/env override, bundled template + `config init` offline |
+| `tests/test_template_online.sh` | optional (needs `NEBULA_TEST_ONLINE=1`) freshness check of the bundled template vs the repo |
 | `tests/test_update.sh` | update source resolution (origin/env) + no-downgrade version comparison |
 | `tests/test_realstore_readonly.sh` | uses a real cert store **read-only** (hashes unchanged, no `sudo`) |
 | `tests/test_cli.sh` | CLI parsing, flag precedence, usage/exit codes, end-to-end unprivileged PKI |
@@ -367,6 +424,18 @@ Looking for more answers? Check the [Full FAQ on GitHub Wiki »](https://github.
 
 ## 🩺 Runtime notes
 
+- **Your config lives with you by default.** `nebula-manager.conf` is resolved as
+  `--config` / `$NEBULA_MANAGER_CONF` → an existing
+  `/etc/nebula/nebula-manager.conf` → `$XDG_CONFIG_HOME/nebula-manager/nebula-manager.conf`.
+  The per-user default means a first run never needs root just to fetch a config
+  template. Force a location with `--config <path>`.
+- **Privilege requests explain themselves.** Before any `sudo` password prompt the
+  tool prints the reason and the exact command it is about to run, e.g.:
+  ```
+  [!] Administrator privileges required: restart the Nebula service
+      command: sudo systemctl restart nebula
+  ```
+  It only ever asks for the specific privileged action, never for the whole session.
 - **Nebula often runs as a service user.** Files under `/etc/nebula` may be owned by
   `nobody` (or the unit's `User=`), so the tool reads them read-only and only
   elevates for the read when necessary. If the config isn't readable, diagnostics
@@ -383,6 +452,65 @@ Looking for more answers? Check the [Full FAQ on GitHub Wiki »](https://github.
   only offered when the published version is **strictly newer** (semantic
   comparison), never as a downgrade. Git checkouts are never auto-overwritten —
   the tool tells you to `git pull` instead.
+
+---
+
+## 🔄 Update checks & forks
+
+Nebula Manager checks for newer versions of **itself** at startup (and via
+`--auto-update-nebula`). Where it checks depends on where your copy came from,
+in this order:
+
+1. `NEBULA_MANAGER_REPO` (`owner/repo`), if set
+2. the git remote **`origin`** of the checkout it is running from
+3. the built-in upstream: **`jordanhillis/nebula-manager`**
+
+So a fork checks *itself* by default. An update is only offered when the
+published version is **strictly newer** than the running one (version-aware
+comparison, e.g. `1.10 > 1.9`) — a fork that is ahead of upstream is never
+offered a downgrade. The result is cached per repo for 6 hours at
+`/tmp/nebula-manager-version-<owner>_<repo>.cache`.
+
+### Checking upstream explicitly
+
+To compare against the canonical project instead of your fork, point the check
+at the upstream repo:
+
+```bash
+# one-off
+NEBULA_MANAGER_REPO=jordanhillis/nebula-manager ./nebula-manager
+
+# for the current shell / a CI job
+export NEBULA_MANAGER_REPO=jordanhillis/nebula-manager
+```
+
+Pick a specific branch or tag with `NEBULA_MANAGER_REF`:
+
+```bash
+NEBULA_MANAGER_REPO=jordanhillis/nebula-manager NEBULA_MANAGER_REF=main ./nebula-manager
+```
+
+Confirm what is being checked with `paths`:
+
+```bash
+./nebula-manager paths      # -> update-repo: ulno/nebula-manager@main
+```
+
+### Disabling the check
+
+Set `disable_version_check=true` under `[global]` in `nebula-manager.conf`.
+(The same setting also silences the "update available" prompt.)
+
+### What accepting an update does
+
+- **Git checkout:** the tool never overwrites your working tree. It prints the
+exact command to use instead (`git -C <dir> pull --ff-only`).
+- **File install:** it downloads the entrypoint **and** `lib/*.sh` from the
+resolved repo, verifies the entrypoint's SHA-256 against the published
+`nebula-manager.sha256`, and only uses `sudo` if the install path requires it.
+
+`NEBULA_MANAGER_DEFAULT_REPO` overrides the last-resort fallback (step 3) and is
+mainly useful for testing.
 
 ---
 

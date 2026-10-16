@@ -256,6 +256,31 @@ ui_input() {
     printf '%s' "$value"
 }
 
+# ui_fselect <title> <prompt> [start_dir] ; prints the selected path
+# Uses the curses file-selection browser where available, else a typed path.
+ui_fselect() {
+    local title="$1" prompt="$2" start="${3:-$HOME}" backend value
+    backend="$(ui_backend)"
+    case "$backend" in
+        whiptail) value=$(whiptail --title "$title" --fselect "${start%/}/" 18 78 3>&1 1>&2 2>&3) || return 1 ;;
+        dialog)   value=$(dialog   --title "$title" --fselect "${start%/}/" 18 78 3>&1 1>&2 2>&3) || return 1 ;;
+        *)        read -rp "$(show_status 'question') $prompt " value ;;
+    esac
+    printf '%s\n' "$value"
+}
+
+# ui_dselect <title> <prompt> [start_dir] ; prints the selected directory
+ui_dselect() {
+    local title="$1" prompt="$2" start="${3:-$HOME}" backend value
+    backend="$(ui_backend)"
+    case "$backend" in
+        whiptail) value=$(whiptail --title "$title" --dselect "${start%/}/" 18 78 3>&1 1>&2 2>&3) || return 1 ;;
+        dialog)   value=$(dialog   --title "$title" --dselect "${start%/}/" 18 78 3>&1 1>&2 2>&3) || return 1 ;;
+        *)        read -rp "$(show_status 'question') $prompt " value ;;
+    esac
+    printf '%s' "$value"
+}
+
 # ui_menu <title> <prompt> <tag> <desc> [<tag> <desc> ...] ; prints chosen tag
 ui_menu() {
     local title="$1" prompt="$2"; shift 2

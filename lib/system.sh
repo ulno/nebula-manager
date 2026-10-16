@@ -22,8 +22,10 @@ NEBULA_MANAGER_SYSTEM_SOURCED=1
 is_root() { [[ "${EUID:-$(id -u)}" -eq 0 ]]; }
 
 # elevate <cmd> [args...]
-# Runs the command directly when already root, otherwise via sudo.
-# Prints a clear error if sudo is unavailable or fails.
+# Runs the command directly when already root, otherwise via sudo. Before any
+# password prompt it explains *why* privileges are needed (set ELEVATE_REASON,
+# or use elevate_why) and shows the exact command being run. Prints a clear
+# error if sudo is unavailable or fails.
 elevate() {
     if (( $# == 0 )); then
         log_error "elevate() called without a command"
@@ -37,11 +39,29 @@ elevate() {
         log_error "This action requires root privileges, but 'sudo' is not installed."
         return 1
     fi
+    # Announce the reason + command when a password is likely required
+    # (i.e. no cached credentials). Uses sudo -n so nothing is prompted here.
+    if ! sudo -n true 2>/dev/null; then
+        local why="${ELEVATE_REASON:-}"
+        if [[ -n "$why" ]]; then
+            log_warn "Administrator privileges required: ${BOLD}$why${RESET}"
+        else
+            log_warn "Administrator privileges required for: ${BOLD}$1${RESET}"
+        fi
+        echo -e "    ${CYAN}command:${RESET} ${RESET}sudo $*" >&2
+    fi
     if ! sudo "$@"; then
-        log_error "Elevation failed for: sudo $*"
+        log_error "Elevation failed (or was declined) for: sudo $*"
         return 1
     fi
     return 0
+}
+
+# elevate_why "<purpose>" <cmd> [args...]
+# Same as elevate(), but states the purpose for the privilege request.
+elevate_why() {
+    local why="$1"; shift
+    ELEVATE_REASON="$why" elevate "$@"
 }
 
 # path_requires_root <path>
@@ -326,8 +346,8 @@ install_nebula() {
         fi
     done
     log_info "Installing Nebula version $latest_version..."
-    elevate mv nebula nebula-cert "${NEBULA_BIN_PATH:-/usr/local/bin}" || { log_error "Failed to move binaries."; return 1; }
-    elevate chmod +x "${NEBULA_BIN_PATH:-/usr/local/bin}/nebula" "${NEBULA_BIN_PATH:-/usr/local/bin}/nebula-cert" \
+    elevate_why "install the Nebula binaries into ${NEBULA_BIN_PATH:-/usr/local/bin}" mv nebula nebula-cert "${NEBULA_BIN_PATH:-/usr/local/bin}" || { log_error "Failed to move binaries."; return 1; }
+    elevate_why "make the Nebula binaries executable" chmod +x "${NEBULA_BIN_PATH:-/usr/local/bin}/nebula" "${NEBULA_BIN_PATH:-/usr/local/bin}/nebula-cert" \
         || { log_error "Failed to set executable permissions."; return 1; }
     if [[ -z "${AUTO_UPDATE:-}" ]]; then
         setup_nebula_config
@@ -400,7 +420,7 @@ remove_nebula() {
     fi
     log_info "Removing Nebula..."
     if [[ -f "${NEBULA_BIN_PATH:-/usr/local/bin}/nebula" || -f "${NEBULA_BIN_PATH:-/usr/local/bin}/nebula-cert" ]]; then
-        elevate rm -f "${NEBULA_BIN_PATH:-/usr/local/bin}/nebula" "${NEBULA_BIN_PATH:-/usr/local/bin}/nebula-cert" \
+        elevate_why "remove the Nebula binaries from ${NEBULA_BIN_PATH:-/usr/local/bin}" rm -f "${NEBULA_BIN_PATH:-/usr/local/bin}/nebula" "${NEBULA_BIN_PATH:-/usr/local/bin}/nebula-cert" \
         && log_success "Nebula removed successfully." \
         || log_error "Failed to remove Nebula binaries."
         remove_nebula_service
@@ -615,7 +635,7 @@ restart_nebula_servers() {
             continue
         fi
         printf "    ${BOLD}Restarting service for %-20s...${RESET} " "$SERVER_NAME_TEMP"
-        if elevate systemctl restart "$serviceName" &>/dev/null && systemctl is-active --quiet "$serviceName"; then
+        if elevate_why "restart the Nebula service ($serviceName)" systemctl restart "$serviceName" &>/dev/null && systemctl is-active --quiet "$serviceName"; then
             echo -e "${GREEN}Success${RESET}"
         else
             touch "/tmp/nebula_failed_${SERVER_NAME_TEMP}"
@@ -636,9 +656,9 @@ toggle_nebula_service() {
     read -r r
     [[ $r =~ ^[Yy]$ ]] || { log_info "Canceled."; return; }
     if [[ $action == start ]]; then
-        elevate systemctl start "$service_name" --no-block
+        elevate_why "start the Nebula service ($service_name)" systemctl start "$service_name" --no-block
     else
-        elevate systemctl stop "$service_name"
+        elevate_why "stop the Nebula service ($service_name)" systemctl stop "$service_name"
     fi
     for _ in {1..10}; do
         systemctl is-active --quiet "$service_name" && new=active || new=inactive
@@ -838,10 +858,108 @@ auto_update_cron_menu() {
 #################### Config loaders / selection ###################
 ###################################################################
 
+# System-wide config location (only used when it already exists).
+: "${SYSTEM_SERVER_CONF:=/etc/nebula/nebula-manager.conf}"
+
+# Resolve the nebula-manager.conf path (least privilege):
+#   --config / $NEBULA_MANAGER_CONF  ->  existing /etc config  ->  per-user config
+# The per-user default means a first run never needs root just to get a config.
+resolve_server_conf() {
+    if [[ -n "${CONF_OVERRIDE:-}" ]]; then printf '%s' "$CONF_OVERRIDE"; return 0; fi
+    if [[ -f "$SYSTEM_SERVER_CONF" ]]; then printf '%s' "$SYSTEM_SERVER_CONF"; return 0; fi
+    printf '%s' "${XDG_CONFIG_HOME:-$HOME/.config}/nebula-manager/nebula-manager.conf"
+}
+
+# Locate a bundled config template next to the code (no network required).
+find_config_template() {
+    local c
+    for c in \
+        "${MANAGER_LIB_DIR:-}/nebula-manager.conf.template" \
+        "${MANAGER_ROOT:-}/lib/nebula-manager.conf.template" \
+        "${MANAGER_ROOT:-}/nebula-manager.conf" \
+        "${NEBULA_MANAGER_TEMPLATE:-}"
+    do
+        [[ -n "$c" && -f "$c" ]] && { printf '%s' "$c"; return 0; }
+    done
+    return 1
+}
+
+# install_config_template <dest> [--force] : copy the bundled template (offline).
+install_config_template() {
+    local dest="$1" force="${2:-}"
+    local tpl; tpl="$(find_config_template)" || { log_error "No bundled config template found (looked in ${MANAGER_LIB_DIR:-lib})"; return 1; }
+    if [[ -e "$dest" && "$force" != "--force" ]]; then
+        log_error "Config already exists: $dest (use --force to overwrite)"
+        return 1
+    fi
+    ensure_dir "$(dirname "$dest")" || return 1
+    if path_requires_root "$dest"; then
+        elevate_why "write the Nebula Manager config to $dest" cp "$tpl" "$dest"
+    else
+        cp "$tpl" "$dest" || { log_error "Failed to write $dest"; return 1; }
+    fi
+    log_success "Created config from local template: $dest"
+}
+
+# refresh_config_template [dest] : download the newest template from the repo.
+refresh_config_template() {
+    local dest="${1:-$(resolve_server_conf)}"
+    if [[ -z "${REPO_BASE:-}" ]]; then log_error "Unknown source repo for template refresh."; return 1; fi
+    local url="${REPO_BASE}/nebula-manager.conf" tmp
+    tmp="$(mktemp)"
+    if ! curl -fsSL "$url" -o "$tmp" || [[ ! -s "$tmp" ]]; then
+        rm -f "$tmp"; log_error "Could not download template from $url"; return 1
+    fi
+    ensure_dir "$(dirname "$dest")" || { rm -f "$tmp"; return 1; }
+    if path_requires_root "$dest"; then
+        elevate_why "update the config template at $dest" cp "$tmp" "$dest"
+    else
+        cp "$tmp" "$dest" || { rm -f "$tmp"; log_error "Failed to write $dest"; return 1; }
+    fi
+    rm -f "$tmp"
+    log_success "Refreshed config from $url"
+}
+
+# Headless: nebula-manager config [path|init|refresh]
+config_cli() {
+    local sub="${1:-path}"; shift || true
+    case "$sub" in
+        path|show) printf '%s\n' "$SERVER_CONF" ;;
+        init|create)
+            local force="" dest=""
+            while (($#)); do
+                case "$1" in
+                    --force|-f) force="--force" ;;
+                    --config) shift; CONF_OVERRIDE="$1" ;;
+                    *) dest="$1" ;;
+                esac
+                shift
+            done
+            [[ -n "$dest" ]] && CONF_OVERRIDE="$dest"
+            SERVER_CONF="$(resolve_server_conf)"
+            install_config_template "$SERVER_CONF" "$force"
+            ;;
+        refresh|update) refresh_config_template "$SERVER_CONF" ;;
+        *) log_error "Unknown 'config' subcommand: $sub (path|init|refresh)"; return 2 ;;
+    esac
+}
+
 # Function to load global variables from conf file
 load_global_config() {
     if [[ ! -f "$SERVER_CONF" ]]; then
         return
+    fi
+    # A system config may be owned by root/service user; read it read-only via a
+    # passwordless elevated copy when possible, otherwise fall back to defaults.
+    local conf_src="$SERVER_CONF" conf_tmp=""
+    if [[ ! -r "$SERVER_CONF" ]]; then
+        conf_tmp="$(readable_nebula_config "$SERVER_CONF" 2>/dev/null)" || conf_tmp=""
+        if [[ -n "$conf_tmp" && "$conf_tmp" != "$SERVER_CONF" ]]; then
+            conf_src="$conf_tmp"
+        else
+            log_warn "Cannot read $SERVER_CONF (permission denied); using defaults."
+            return
+        fi
     fi
     eval "$(
         awk -F= '
@@ -858,8 +976,9 @@ load_global_config() {
                 gsub("-", "_", key)
                 printf "export %s=\"%s\"\n", key, $2
             }
-        ' "$SERVER_CONF"
+        ' "$conf_src"
     )"
+    [[ -n "$conf_tmp" && "$conf_tmp" != "$SERVER_CONF" ]] && rm -f "$conf_tmp"
     : "${NEBULA_CERT_FOLDER:=${GLOBAL_CERT_FOLDER:-certs}}"
     : "${NEBULA_BIN_PATH:=${GLOBAL_BIN_PATH:-/usr/local/bin}}"
     : "${USE_COLOR:=${GLOBAL_USE_COLOR:-true}}"
@@ -908,25 +1027,43 @@ load_server_config() {
     )"
 }
 
+# First-run: no config found -> ask the user what to do (never a silent download).
+first_run_config_setup() {
+    local user_conf="${XDG_CONFIG_HOME:-$HOME/.config}/nebula-manager/nebula-manager.conf"
+    echo -e "$(show_status 'warning') ${YELLOW}No configuration found at:${RESET} ${CYAN}$SERVER_CONF${RESET}"
+    local choice
+    choice="$(ui_menu "Nebula Manager" "No configuration found. What would you like to do?" \
+        "create"   "Create one at $user_conf (from the bundled template)" \
+        "browse"   "Use an existing config file (browse)..." \
+        "download" "Download the latest template from ${REPO_SLUG:-the repo}" \
+        "cancel"   "Cancel")" || choice="cancel"
+    case "$choice" in
+        create)
+            CONF_OVERRIDE="$user_conf"; SERVER_CONF="$user_conf"
+            install_config_template "$SERVER_CONF" --force || return 1
+            log_info "Edit it (add your servers) and re-run. Path: $SERVER_CONF"
+            return 0 ;;
+        browse)
+            local picked; picked="$(ui_fselect "Select nebula-manager.conf" "Path to your config file:" "$HOME")"
+            if [[ -n "$picked" && -f "$picked" ]]; then
+                CONF_OVERRIDE="$picked"; SERVER_CONF="$picked"
+                log_success "Using config: $SERVER_CONF"
+                return 0
+            fi
+            log_error "No valid config file selected."; return 1 ;;
+        download)
+            CONF_OVERRIDE="$user_conf"; SERVER_CONF="$user_conf"
+            refresh_config_template "$SERVER_CONF" || return 1
+            log_info "Edit it and re-run. Path: $SERVER_CONF"
+            return 0 ;;
+        *) log_info "Canceled."; return 1 ;;
+    esac
+}
+
 # Function for server selection
 select_nebula_server() {
     if [[ ! -f "$SERVER_CONF" ]]; then
-        log_warn "Config file not found: $SERVER_CONF"
-        echo -e "$(show_status 'info') ${CYAN}Downloading from: $SERVER_CONF_URL${RESET}"
-        ensure_dir "$(dirname "$SERVER_CONF")" || { log_error "Failed to create directory: $(dirname "$SERVER_CONF")"; exit 1; }
-        if path_requires_root "$SERVER_CONF"; then
-            elevate curl -fsSL "$SERVER_CONF_URL" -o "$SERVER_CONF"
-        else
-            curl -fsSL "$SERVER_CONF_URL" -o "$SERVER_CONF"
-        fi
-        if [[ -f "$SERVER_CONF" ]]; then
-            log_success "Downloaded example config to: $SERVER_CONF"
-        else
-            log_error "Failed to download config from $SERVER_CONF_URL"
-            exit 1
-        fi
-        log_info "Please edit the config file before continuing."
-        exit 1
+        first_run_config_setup || exit 1
     fi
 
     local -a servers
@@ -1104,18 +1241,18 @@ perform_manager_update() {
 
     mkdir -p "$tmp/lib"
     local m
-    for m in ui pki bench system; do
-        curl -fsSL "${REPO_BASE}/lib/${m}.sh" -o "$tmp/lib/${m}.sh" \
-            || { log_error "Failed to download lib/${m}.sh"; rm -rf "$tmp"; return 1; }
+    for m in ui.sh pki.sh bench.sh system.sh nebula-manager.conf.template; do
+        curl -fsSL "${REPO_BASE}/lib/${m}" -o "$tmp/lib/${m}" \
+            || { log_error "Failed to download lib/${m}"; rm -rf "$tmp"; return 1; }
     done
 
     local target="${SCRIPT_PATH:-$0}" libdir="${MANAGER_LIB_DIR:-}"
     if path_requires_root "$target"; then
         elevate cp "$entry" "$target" && elevate chmod +x "$target"
-        [[ -n "$libdir" ]] && elevate cp "$tmp/lib/"*.sh "$libdir/"
+        [[ -n "$libdir" ]] && elevate cp "$tmp/lib/"* "$libdir/"
     else
         cp "$entry" "$target" && chmod +x "$target"
-        [[ -n "$libdir" ]] && cp "$tmp/lib/"*.sh "$libdir/"
+        [[ -n "$libdir" ]] && cp "$tmp/lib/"* "$libdir/"
     fi
     rm -rf "$tmp"
     log_success "Updated to version v$latest. Please rerun."

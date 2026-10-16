@@ -15,6 +15,12 @@ elevate mkdir -p "$SANDBOX/anything"
 assert_eq "elevate() invokes sudo once" "$(( $(sudo_count) - before ))" "1"
 assert_contains "sudo recorded the command" "$(cat "$SUDO_LOG")" "mkdir -p $SANDBOX/anything"
 
+# --- elevate() explains the purpose and the exact command before prompting ---
+notice="$(ELEVATE_REASON='write /etc/nebula/config.yml' elevate true 2>&1 >/dev/null)"
+assert_contains "elevate explains why" "$notice" "Administrator privileges required"
+assert_contains "elevate states the purpose" "$notice" "write /etc/nebula/config.yml"
+assert_contains "elevate shows the command" "$notice" "sudo true"
+
 # --- elevate() propagates failure with a clear return code ---
 SUDO_FAIL=1 elevate true
 assert_eq "elevate() surfaces sudo failure" "$?" "1"
