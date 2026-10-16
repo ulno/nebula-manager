@@ -70,7 +70,7 @@ resolve_lib_dir() {
 }
 
 MANAGER_LIB_DIR="$(resolve_lib_dir)"
-for _mod in ui pki bench system; do
+for _mod in ui pki bench system import; do
     if [[ -r "$MANAGER_LIB_DIR/$_mod.sh" ]]; then
         # shellcheck source=/dev/null
         source "$MANAGER_LIB_DIR/$_mod.sh"
@@ -105,8 +105,8 @@ top_header() {
 
 nebula_maintenance() {
     dynamic_menu_title=("$MENU_PATH" "Maintenance")
-    dynamic_menu_options=("$(get_icon 'start')Toggle Nebula Service" "$(get_icon 'download')Update Nebula" "$(get_icon 'schedule')Auto-Update Scheduler" "$(get_icon 'install')Install Script to System" "$(get_icon 'uninstall')${ORANGE}Remove Nebula${RESET}")
-    dynamic_menu_functions=("toggle_nebula_service" "check_for_nebula_update" "auto_update_cron_menu" "ensure_installed_to_bin_path" "remove_nebula")
+    dynamic_menu_options=("$(get_icon 'start')Toggle Nebula Service" "$(get_icon 'download')Update Nebula" "$(get_icon 'schedule')Auto-Update Scheduler" "$(get_icon 'install')Install Script to System" "$(get_icon 'upload')Import Existing Setup" "$(get_icon 'uninstall')${ORANGE}Remove Nebula${RESET}")
+    dynamic_menu_functions=("toggle_nebula_service" "check_for_nebula_update" "auto_update_cron_menu" "ensure_installed_to_bin_path" "import_run" "remove_nebula")
     dynamic_menu dynamic_menu_title dynamic_menu_options dynamic_menu_functions 1
 }
 
@@ -171,6 +171,7 @@ Commands:
   bench server|client [...]       iperf3 benchmarks
   diag                            Diagnostics (TUN IP, UDP socket, cert expiry)
   config path|init|refresh|edit   Manage nebula-manager.conf (offline template)
+  import [--dry-run] [--yes]      Detect a running Nebula and generate nebula-manager.conf
   ui                              Report the selected UI backend (whiptail/dialog/plain)
   paths                           Print resolved config & key directories
   auto-update                     Update Nebula to the latest release
@@ -236,6 +237,7 @@ main() {
         bench)          shift; bench_cli "$@" ;;
         diag|diagnose)  shift; diag_cli "$@" ;;
         config|conf)    shift; config_cli "$@" ;;
+        import)         shift; import_cli "$@" ;;
         ui)             ui_report ;;
         auto-update)
             load_global_config

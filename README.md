@@ -50,6 +50,7 @@ lib/
   pki.sh                # CA, signing, inspection, workspaces, client bundling
   bench.sh              # iperf3 server/client, connectivity, diagnostics
   system.sh             # elevate()/sudo, systemd, /etc/nebula, install/update
+  import.sh             # discover an existing Nebula -> generate nebula-manager.conf
   nebula-manager.conf.template  # bundled config template (offline first-run)
 tests/                  # standalone mock-driven Bash test harness
 run_tests.sh            # test runner (also: make test)
@@ -198,6 +199,11 @@ Configuration (validate/edit/firewall), Connectivity, Benchmarks, and Maintenanc
 ./nebula-manager ca --name my-ca --duration 999999h --cert-dir ~/keys/nebula
 ./nebula-manager sign --name host1 --ip 10.42.0.2/24 --groups servers \
                       --duration 720 --cert-dir ~/keys/nebula
+
+# Import an existing Nebula install
+./nebula-manager import                # detect running Nebula -> propose nebula-manager.conf
+./nebula-manager import --dry-run      # just show what was detected / proposed
+./nebula-manager import --yes          # write it non-interactively
 
 # Config management (offline template lives in lib/)
 ./nebula-manager config path
@@ -529,15 +535,16 @@ planned features — see **[docs/user-stories.md](docs/user-stories.md)**:
    add two more home machines, and hand out per-student profile collections.
 2. **The students** — join Theprof's mesh from Windows, Linux and macOS.
 
-The first story makes the case for a top priority: on a host where Nebula is
-*already running*, **discover the installation and offer to generate
-`nebula-manager.conf`** instead of asking for a config that doesn't exist yet.
+The first story makes the case for the **`import`** wizard — on a host where Nebula
+is *already running*, discover the installation and offer to generate
+`nebula-manager.conf` instead of asking for a config that doesn't exist yet.
+**This is now implemented** (`nebula-manager import`).
 
 ---
 
 ## 🧭 Roadmap / TODO
 
-- [ ] **`import` wizard** – detect a running Nebula (service, binaries, config,
+- [x] **`import` wizard** – detect a running Nebula (service, binaries, config,
       certs, `tun.dev`, `listen.port`, lighthouse role) and generate
       `nebula-manager.conf`; never silently elevate (show reason + command).
 - [ ] **`server add`** – build `[server.*]` sections from a live install.

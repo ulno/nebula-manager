@@ -51,10 +51,10 @@ graph TD
   L --- G2
 ```
 
-### Phase 0 — Import the existing setup (⚙️ planned)
+### Phase 0 — Import the existing setup (✅ available)
 
 Today he would have to create a config by hand. The **intended** experience is a
-single discovery pass:
+single discovery pass (✅ available):
 
 ```bash
 $ nebula-manager import
@@ -82,16 +82,20 @@ Proposed nebula-manager.conf -> ~/.config/nebula-manager/nebula-manager.conf
 Write this file? [Y/n]
 ```
 
-What the importer must detect (spec):
+What the importer detects:
 
-- **service(s):** `systemctl list-units 'nebula*'` / `show -p MainPID` → unit + state; path of the unit file; the `User=` it runs as.
-- **binaries:** `command -v nebula nebula-cert` and `nebula --version` (sets `bin_path`).
-- **config(s):** for each unit, the `-config` path from `ExecStart` (fallback `/etc/nebula/config.yml`); parse `tun.dev`, `listen.port`, `lighthouse.am_lighthouse`, `static_host_map`, `pki.{ca,cert,key}`.
-- **certs:** the `pki.ca/cert/key` directory, plus any `$NEBULA_KEYS_DIR` / `~/keys/nebula` / `$NEBULA_DIR/certs`; count CAs/certs to propose `cert_dir`.
-- **port:** if `listen.port` is `0`/unset, auto-detect from the running process (as `diag` already does).
-- **read-only:** reading service-owned files only when needed, with a **reason + command** shown before any sudo prompt (never silently).
+- **service(s):** `systemctl list-units/list-unit-files 'nebula*'` → unit name + `FragmentPath`, and the `-config` path from the unit's `ExecStart` (falls back to `/etc/nebula/config.yml`).
+- **binaries:** `command -v nebula` → proposes `bin_path`.
+- **config keys:** `tun.dev`, `listen.port`, `lighthouse.am_lighthouse`, the first `static_host_map` peer, and `pki.ca` (whose directory becomes `cert_dir`).
+- **certs:** the `pki` directory, else any detected store (`$NEBULA_KEYS_DIR`, `~/keys/nebula`, `$NEBULA_DIR/certs`, the default); counts `*.crt`.
+- **port:** `listen.port`, or auto-detection when it is `0`/unset (same logic as `diag`).
+- **read-only:** a privileged config is read only via a readable copy that **asks first and shows the reason + command** before any sudo prompt.
 
-Until then, the ✅ workaround is:
+Flags: `--dry-run` (print only), `--yes` (write non-interactively), `--force`
+(overwrite), `--from CONFIG` (use a specific Nebula config for discovery),
+`--config OUT` (output path). It refuses to write without confirmation on a
+non-tty unless `--yes` is given. If nothing is detected it falls back to:
+
 ```bash
 nebula-manager config init          # write ~/.config/nebula-manager/nebula-manager.conf
 nebula-manager config edit          # replace [server.nebula-example1] with your real server(s)
@@ -264,7 +268,7 @@ the student's machine.
 | Tool config resolution + `config init/refresh/edit` (offline template) | ✅ today |
 | Diagnostics (TUN ip, UDP socket auto-detect, cert expiry) | ✅ today |
 | iperf3 bench (server/client) | ✅ today |
-| **`import`**: discover a running Nebula and generate `nebula-manager.conf` | ⚙️ planned |
+| **`import`**: discover a running Nebula and generate `nebula-manager.conf` | ✅ today |
 | **`server add`**: build the `[server.*]` sections from a live install | ⚙️ planned |
 | **`client-setup <bundle>`**: install a bundle + service on a new host | ⚙️ planned |
 | **`profile create`**: group collections (N bundles + CA + README/install) | ⚙️ planned |

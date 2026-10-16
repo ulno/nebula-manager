@@ -79,6 +79,8 @@ MOCK
     source "$REPO_ROOT/lib/pki.sh"
     # shellcheck source=/dev/null
     source "$REPO_ROOT/lib/bench.sh"
+    # shellcheck source=/dev/null
+    source "$REPO_ROOT/lib/import.sh"
 
     trap 'rm -rf "$SANDBOX"' EXIT
 }
