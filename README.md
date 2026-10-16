@@ -215,7 +215,8 @@ Configuration (validate/edit/firewall), Connectivity, Benchmarks, and Maintenanc
 ./nebula-manager diag                            # TUN IP, UDP socket, cert expiry
 
 # Utilities
-./nebula-manager paths                           # resolved config / key dirs
+./nebula-manager paths                           # resolved config / key dirs + UI backend
+./nebula-manager ui                              # which UI backend is active (whiptail/dialog/plain)
 ./nebula-manager auto-update                     # update Nebula to latest
 ./nebula-manager --version
 ```
@@ -239,7 +240,7 @@ Configuration (validate/edit/firewall), Connectivity, Benchmarks, and Maintenanc
 | `NEBULA_MANAGER_REPO` | `owner/repo` used for update checks / templates (default: git `origin`) |
 | `NEBULA_MANAGER_REF` | Git ref (branch) used for update checks (default `main`) |
 | `NEBULA_MANAGER_DEFAULT_REPO` | Last-resort repo when neither env nor git `origin` is available (default `jordanhillis/nebula-manager`) |
-| `NEBULA_UI` | UI backend override (`auto`, `whiptail`, `dialog`, `plain`) |
+| `NEBULA_UI` | UI backend: `auto` (whiptail → dialog → plain), `whiptail`, `dialog`, `plain` |
 | `NEBULA_DEFAULT_PORT` | Fallback Nebula listen port for diagnostics (default `4242`) |
 
 ---
@@ -265,8 +266,12 @@ If no config is found, the tool does **not** silently download anything. It asks
 
 - **Create** copies the bundled template that ships in `lib/`
   (`lib/nebula-manager.conf.template`) — **offline, no root**.
-- **Browse** opens a file browser (`whiptail --fselect`) or lets you type a path.
+- **Browse** opens a file browser (a `whiptail` menu navigator, or dialog's
+  native `--fselect`).
 - **Download** fetches the newest template from your source repo on request only.
+
+After **Create**/**Download** the tool offers to open the new file in `$EDITOR`,
+and then continues (it does not exit).
 
 ### Managing the config headlessly
 
@@ -274,6 +279,7 @@ If no config is found, the tool does **not** silently download anything. It asks
 ./nebula-manager config path                 # print the resolved config path
 ./nebula-manager config init [--force]       # create it from the bundled template
 ./nebula-manager config init --config /etc/nebula/nebula-manager.conf
+./nebula-manager config edit                 # open it in $EDITOR
 ./nebula-manager config refresh              # download the latest template
 ```
 

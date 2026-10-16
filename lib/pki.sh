@@ -102,6 +102,7 @@ nebula_keys_known() {
 }
 
 # First-run: offer to pick an existing workspace, browse, or keep the default.
+# The reason is shown inside the dialog; invalid input loops back to the menu.
 first_run_workspace_setup() {
     nebula_keys_known && return 0
     local default_dir suggested="" d
@@ -110,33 +111,37 @@ first_run_workspace_setup() {
         case "$d" in "$default_dir") ;; *) suggested="$d"; break ;; esac
     done < <(workspace_candidates)
 
-    show_menu_header "$MENU_PATH" "Certificates" "Workspace"
-    echo -e "$(show_status 'warning') ${YELLOW}No certificate workspace selected yet.${RESET}"
-    local -a menu=()
-    [[ -n "$suggested" ]] && menu+=( "suggested" "Use existing store: $suggested" )
-    menu+=( "default" "Use default store: $default_dir" )
-    [[ -n "${NEBULA_DIR:-}" ]] && menu+=( "server" "Use server dir: ${NEBULA_DIR}/${NEBULA_CERT_FOLDER:-certs}" )
-    menu+=( "browse" "Browse for a certificate directory..." )
-    menu+=( "skip"   "Skip for now (use default)" )
-
+    local reason="No certificate workspace selected yet.
+Where do your keys/certs (ca.crt, *.crt) live?"
     local choice
-    choice="$(ui_menu "Certificate Workspace" "Where do your keys/certs live?" "${menu[@]}")" || choice="skip"
-    case "$choice" in
-        suggested) CERT_DIR_SELECTED="$suggested" ;;
-        default)   CERT_DIR_SELECTED="$default_dir" ;;
-        server)    CERT_DIR_SELECTED="${NEBULA_DIR}/${NEBULA_CERT_FOLDER:-certs}" ;;
-        browse)
-            local picked
-            picked="$(ui_dselect "Select certificate directory" "Choose the directory with ca.crt / *.crt:" "${suggested:-${HOME:-$PWD}}")"
-            if [[ -n "$picked" && -d "$picked" ]]; then
-                CERT_DIR_SELECTED="$picked"
-            else
-                log_warn "No directory selected; keeping default."
-                return 0
-            fi
-            ;;
-        *) return 0 ;;
-    esac
+    while true; do
+        local -a menu=()
+        [[ -n "$suggested" ]] && menu+=( "suggested" "Use existing store: $suggested" )
+        menu+=( "default" "Use default store: $default_dir" )
+        [[ -n "${NEBULA_DIR:-}" ]] && menu+=( "server" "Use server dir: ${NEBULA_DIR}/${NEBULA_CERT_FOLDER:-certs}" )
+        menu+=( "browse" "Browse for a directory..." )
+        menu+=( "skip"   "Skip for now (use default)" )
+
+        choice="$(ui_menu "Certificate Workspace" "$reason" "${menu[@]}")" || choice="skip"
+        case "$choice" in
+            suggested) CERT_DIR_SELECTED="$suggested" ;;
+            default)   CERT_DIR_SELECTED="$default_dir" ;;
+            server)    CERT_DIR_SELECTED="${NEBULA_DIR}/${NEBULA_CERT_FOLDER:-certs}" ;;
+            browse)
+                local picked
+                picked="$(ui_dselect "Select certificate directory" "Choose the directory containing ca.crt / *.crt" "${suggested:-${HOME:-$PWD}}")"
+                if [[ -n "$picked" && -d "$picked" ]]; then
+                    CERT_DIR_SELECTED="$picked"
+                else
+                    reason="No directory selected.
+Pick a directory, or one of the options below."
+                    continue
+                fi
+                ;;
+            *) return 0 ;;
+        esac
+        break
+    done
     save_cert_dir_selection "$CERT_DIR_SELECTED"
     ensure_dir "$CERT_DIR_SELECTED" || { log_error "Could not create $CERT_DIR_SELECTED"; return 1; }
     log_success "Certificate workspace set to: ${CYAN}$CERT_DIR_SELECTED${RESET}"

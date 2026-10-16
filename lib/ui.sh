@@ -12,6 +12,12 @@
 [[ -n "${NEBULA_MANAGER_UI_SOURCED:-}" ]] && return 0
 NEBULA_MANAGER_UI_SOURCED=1
 
+# A cleaner default look for whiptail/newt (the stock theme is the blue "installer"
+# look people often mistake for dialog). Respects a user-provided NEWT_COLORS.
+if [[ -z "${NEWT_COLORS:-}" ]]; then
+    export NEWT_COLORS='root=lightgray,black;border=cyan,black;window=lightgray,black;shadow=black,black;title=cyan,black;button=black,cyan;actbutton=black,yellow;checkbox=lightgray,black;actcheckbox=black,yellow;entry=lightgray,black;label=lightgray,black;listbox=lightgray,black;actlistbox=black,cyan;sellistbox=black,green;actsellistbox=black,yellow;textbox=lightgray,black;compactbutton=lightgray,black'
+fi
+
 ###################################################################
 ########################## Colors / Icons #########################
 ###################################################################
@@ -193,27 +199,50 @@ hash_color_256() {
 # whiptail is strongly preferred; dialog is a last resort and plain text is the
 # final fallback (also used for non-interactive/headless runs).
 ui_backend() {
+    local b="plain"
     case "${NEBULA_UI:-auto}" in
-        plain)    printf 'plain';    return 0 ;;
-        whiptail) command -v whiptail >/dev/null 2>&1 && { printf 'whiptail'; return 0; }
-                  printf 'plain'; return 0 ;;
-        dialog)   command -v dialog  >/dev/null 2>&1 && { printf 'dialog';  return 0; }
-                  printf 'plain'; return 0 ;;
-    esac
-    # auto: only use a curses backend when attached to a real terminal
-    if [[ -t 0 && -t 1 ]]; then
-        if command -v whiptail >/dev/null 2>&1; then
-            printf 'whiptail'; return 0
-        fi
-        if command -v dialog >/dev/null 2>&1; then
-            if [[ "${_NEBULA_DIALOG_WARNED:-}" != 1 ]]; then
-                log_warn "whiptail not found - falling back to dialog (last resort; install whiptail for the best UI)."
-                _NEBULA_DIALOG_WARNED=1
+        plain)    b="plain" ;;
+        whiptail) command -v whiptail >/dev/null 2>&1 && b="whiptail" ;;
+        dialog)   command -v dialog   >/dev/null 2>&1 && b="dialog" ;;
+        *)
+            # auto: a curses UI needs an interactive stdin. Note that stdout is
+            # usually a pipe here (wrappers run in a command substitution), so we
+            # must NOT test -t 1 - that caused an invisible plain fallback.
+            if [[ -t 0 ]]; then
+                if command -v whiptail >/dev/null 2>&1; then
+                    b="whiptail"
+                elif command -v dialog >/dev/null 2>&1; then
+                    b="dialog"
+                    if [[ "${_NEBULA_DIALOG_WARNED:-}" != 1 ]]; then
+                        log_warn "whiptail not found - falling back to dialog (last resort; install whiptail for the best UI)."
+                        _NEBULA_DIALOG_WARNED=1
+                    fi
+                fi
             fi
-            printf 'dialog'; return 0
-        fi
+            ;;
+    esac
+    # NEBULA_UI_DEBUG=1 prints exactly which backend (and paths) are in play.
+    if [[ "${NEBULA_UI_DEBUG:-0}" == "1" ]]; then
+        printf 'ui: requested=%s selected=%s whiptail=%s dialog=%s stdin_tty=%s\n' \
+            "${NEBULA_UI:-auto}" "$b" \
+            "$(command -v whiptail 2>/dev/null || echo -)" \
+            "$(command -v dialog   2>/dev/null || echo -)" \
+            "$([[ -t 0 ]] && echo y || echo n)" >&2
     fi
-    printf 'plain'
+    printf '%s' "$b"
+}
+
+# ui_report : explain which backend is selected and why (diagnostic aid).
+ui_report() {
+    local b; b="$(ui_backend)"
+    printf 'requested (NEBULA_UI): %s\n' "${NEBULA_UI:-<unset/auto>}"
+    printf 'selected backend:      %s\n' "$b"
+    printf 'whiptail:              %s\n' "$(command -v whiptail 2>/dev/null || echo 'not found')"
+    printf 'dialog:                %s\n' "$(command -v dialog   2>/dev/null || echo 'not found')"
+    printf 'stdin is a tty:        %s\n' "$([[ -t 0 ]] && echo yes || echo no)"
+    if [[ "$b" == dialog ]]; then
+        printf 'note: whiptail is preferred. Unset NEBULA_UI (or set NEBULA_UI=whiptail) for the nicer UI.\n'
+    fi
 }
 
 # ui_msg <title> <message>
@@ -223,7 +252,7 @@ ui_msg() {
     case "$backend" in
         whiptail) whiptail --title "$title" --msgbox "$msg" 15 70 ;;
         dialog)   dialog --title "$title" --msgbox "$msg" 15 70 ;;
-        *)        echo -e "${BOLD}$title${RESET}\n$msg" ;;
+        *)        echo -e "${BOLD}$title${RESET}\n$msg" >&2 ;;
     esac
 }
 
@@ -256,29 +285,134 @@ ui_input() {
     printf '%s' "$value"
 }
 
-# ui_fselect <title> <prompt> [start_dir] ; prints the selected path
-# Uses the curses file-selection browser where available, else a typed path.
+# Portable directory/file browser. whiptail has NO --fselect/--dselect (those
+# are dialog-only), so for whiptail we navigate with --menu. Echoes the chosen
+# path, or returns non-zero on cancel.
+# Decide what a browser selection means. Prints: "goto <dir>" to descend,
+# "done <path>" to finish. Directories always descend (never end the browse);
+# the explicit "Use this directory" item finishes a directory pick.
+_ui_browse_resolve() {
+    local cur="$1" upper="$2" sel="$3"
+    case "$sel" in
+        __PARENT__) printf 'goto %s\n' "$(dirname "$upper")" ;;
+        __USE__)    printf 'done %s\n' "$cur" ;;
+        *)          if [[ -d "$sel" ]]; then printf 'goto %s\n' "$sel"; else printf 'done %s\n' "$sel"; fi ;;
+    esac
+}
+
+_ui_whiptail_browse() {
+    local title="$1" start="${2:-$HOME}" mode="${3:-dir}" cur
+    cur="${start%/}"; [[ -d "$cur" ]] || cur="${HOME:-/}"
+    while true; do
+        local -a dirs=() files=() items=()
+        local upper glob e name
+        upper="$cur"; [[ -z "$upper" ]] && upper="/"
+        glob="$upper"; [[ "$glob" == "/" ]] && glob=""   # avoid '//*' globs at root
+        for e in "$glob"/* "$glob"/.[!.]*; do
+            [[ -e "$e" ]] || continue
+            name="$(basename "$e")"
+            if [[ -d "$e" ]]; then dirs+=( "$e" "[dir] $name/" )
+            elif [[ "$mode" == "file" && -f "$e" ]]; then files+=( "$e" "$name" ); fi
+        done
+        items=( "__PARENT__" "../" )
+        [[ "$mode" == "dir" ]] && items+=( "__USE__" "Use this directory" )
+        (( ${#dirs[@]} ))  && items+=( "${dirs[@]}" )
+        (( ${#files[@]} )) && items+=( "${files[@]}" )
+        local sel act path
+        sel="$(whiptail --title "$title" --cancel-button "Cancel" --ok-button "Select" \
+            --menu "In: $cur" 22 "$(_ui_box_cols)" 14 "${items[@]}" 3>&1 1>&2 2>&3)" || return 1
+        read -r act path < <(_ui_browse_resolve "$cur" "$upper" "$sel")
+        case "$act" in
+            goto) cur="$path" ;;
+            done) printf '%s' "$path"; return 0 ;;
+        esac
+    done
+}
+
+# ui_fselect <title> <prompt> [start_dir] ; prints the selected file
+# whiptail -> menu navigator; dialog -> native --fselect; else typed path.
 ui_fselect() {
     local title="$1" prompt="$2" start="${3:-$HOME}" backend value
     backend="$(ui_backend)"
     case "$backend" in
-        whiptail) value=$(whiptail --title "$title" --fselect "${start%/}/" 18 78 3>&1 1>&2 2>&3) || return 1 ;;
-        dialog)   value=$(dialog   --title "$title" --fselect "${start%/}/" 18 78 3>&1 1>&2 2>&3) || return 1 ;;
+        whiptail) value="$(_ui_whiptail_browse "$title" "$start" file)" || return 1 ;;
+        dialog)   value=$(dialog --title "$title" --cancel-button "Back" --fselect "${start%/}/" 20 "$(_ui_box_cols)" 3>&1 1>&2 2>&3) || return 1 ;;
         *)        read -rp "$(show_status 'question') $prompt " value ;;
     esac
     printf '%s\n' "$value"
 }
 
 # ui_dselect <title> <prompt> [start_dir] ; prints the selected directory
+# whiptail -> menu navigator; dialog -> native --dselect; else typed path.
 ui_dselect() {
     local title="$1" prompt="$2" start="${3:-$HOME}" backend value
     backend="$(ui_backend)"
     case "$backend" in
-        whiptail) value=$(whiptail --title "$title" --dselect "${start%/}/" 18 78 3>&1 1>&2 2>&3) || return 1 ;;
-        dialog)   value=$(dialog   --title "$title" --dselect "${start%/}/" 18 78 3>&1 1>&2 2>&3) || return 1 ;;
+        whiptail) value="$(_ui_whiptail_browse "$title" "$start" dir)" || return 1 ;;
+        dialog)   value=$(dialog --title "$title" --cancel-button "Back" --dselect "${start%/}/" 20 "$(_ui_box_cols)" 3>&1 1>&2 2>&3) || return 1 ;;
         *)        read -rp "$(show_status 'question') $prompt " value ;;
     esac
     printf '%s' "$value"
+}
+
+# Terminal width for boxes (override with UI_MENU_COLS for testing).
+_ui_box_cols() {
+    local c="${UI_MENU_COLS:-}"
+    [[ -n "$c" ]] || c="$(tput cols 2>/dev/null || echo 80)"
+    [[ "$c" =~ ^[0-9]+$ ]] || c=80
+    (( c < 50 )) && c=50
+    printf '%s' "$c"
+}
+
+# Compute a sensible box geometry from the prompt text AND the menu items, so
+# nothing overflows or gets squeezed. Truncates over-long descriptions.
+# Sets: _UI_W, _UI_H, _UI_MH, _UI_PAIRS[].
+_ui_menu_geometry() {
+    local prompt="$1"; shift
+    local -a pairs=("$@")
+    local -a plines=() line
+    while IFS= read -r line; do plines+=("$line"); done <<< "$prompt"
+
+    local i maxw=0
+    for line in "${plines[@]}"; do (( ${#line} > maxw )) && maxw=${#line}; done
+    for ((i=0; i<${#pairs[@]}; i+=2)); do
+        line="${pairs[i]}  ${pairs[i+1]}"
+        (( ${#line} > maxw )) && maxw=${#line}
+    done
+
+    local cols; cols="$(_ui_box_cols)"
+    _UI_W=$(( maxw + 6 ))
+    (( _UI_W > cols - 4 )) && _UI_W=$(( cols - 4 ))
+    (( _UI_W < 60 )) && _UI_W=60
+
+    local lim=$(( _UI_W - 6 ))
+    _UI_PAIRS=()
+    local tag desc allowed
+    for ((i=0; i<${#pairs[@]}; i+=2)); do
+        tag="${pairs[i]}"; desc="${pairs[i+1]}"
+        allowed=$(( lim - ${#tag} - 2 ))
+        (( allowed < 8 )) && allowed=8
+        (( ${#desc} > allowed )) && desc="${desc:0:$((allowed-3))}..."
+        _UI_PAIRS+=("$tag" "$desc")
+    done
+
+    # How many lines the prompt wraps to, given the box width.
+    local wrapw=$(( _UI_W - 6 )); (( wrapw < 10 )) && wrapw=10
+    local textlines=0 pl n
+    for pl in "${plines[@]}"; do
+        n=$(( (${#pl} + wrapw - 1) / wrapw )); (( n < 1 )) && n=1
+        textlines=$(( textlines + n ))
+    done
+
+    local nitems=$(( ${#pairs[@]} / 2 ))
+    (( nitems < 1 )) && nitems=1
+    _UI_MH=$(( nitems < 14 ? nitems : 14 ))
+    _UI_H=$(( textlines + _UI_MH + 7 ))
+
+    local rows="${UI_MENU_ROWS:-}"
+    [[ -n "$rows" ]] || rows="$(tput lines 2>/dev/null || echo 24)"
+    [[ "$rows" =~ ^[0-9]+$ ]] || rows=24
+    (( _UI_H > rows - 2 )) && _UI_H=$(( rows - 2 ))
 }
 
 # ui_menu <title> <prompt> <tag> <desc> [<tag> <desc> ...] ; prints chosen tag
@@ -287,19 +421,30 @@ ui_menu() {
     local backend choice
     backend="$(ui_backend)"
     case "$backend" in
-        whiptail) choice=$(whiptail --title "$title" --menu "$prompt" 20 70 12 "$@" 3>&1 1>&2 2>&3) || return 1 ;;
-        dialog)   choice=$(dialog --title "$title" --menu "$prompt" 20 70 12 "$@" 3>&1 1>&2 2>&3) || return 1 ;;
+        whiptail|dialog)
+            _ui_menu_geometry "$prompt" "$@"
+            if [[ "$backend" == "whiptail" ]]; then
+                choice=$(whiptail --title "$title" --cancel-button "Back" --ok-button "Select" \
+                    --menu "$prompt" "$_UI_H" "$_UI_W" "$_UI_MH" "${_UI_PAIRS[@]}" 3>&1 1>&2 2>&3) || return 1
+            else
+                choice=$(dialog --title "$title" --cancel-button "Back" --ok-button "Select" \
+                    --menu "$prompt" "$_UI_H" "$_UI_W" "$_UI_MH" "${_UI_PAIRS[@]}" 3>&1 1>&2 2>&3) || return 1
+            fi
+            ;;
         *)
-            echo -e "${BOLD}$title${RESET}"
+            # Display on stderr so choices stay visible when stdout is captured
+            # by the caller's command substitution; only the answer goes to stdout.
+            echo -e "${BOLD}$title${RESET}" >&2
+            [[ -n "$prompt" ]] && echo -e "$prompt" >&2
             local -a tags=()
             while (( $# )); do
                 tags+=("$1")
-                printf "  ${BOLD}${YELLOW}%d.${RESET} %s\n" "${#tags[@]}" "$2"
+                printf "  ${BOLD}${YELLOW}%d.${RESET} %s\n" "${#tags[@]}" "$2" >&2
                 shift 2
             done
             read -rp "$(show_status 'question') $prompt " choice
             if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#tags[@]} )); then
-                printf '%s' "${tags[$((choice-1))]}"
+                choice="${tags[$((choice-1))]}"
             else
                 return 1
             fi

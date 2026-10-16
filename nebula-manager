@@ -170,7 +170,8 @@ Commands:
   cert list|expiry|remove|bundle  Certificate operations
   bench server|client [...]       iperf3 benchmarks
   diag                            Diagnostics (TUN IP, UDP socket, cert expiry)
-  config path|init|refresh        Manage nebula-manager.conf (offline template)
+  config path|init|refresh|edit   Manage nebula-manager.conf (offline template)
+  ui                              Report the selected UI backend (whiptail/dialog/plain)
   paths                           Print resolved config & key directories
   auto-update                     Update Nebula to the latest release
 
@@ -193,6 +194,7 @@ print_paths() {
     printf 'cert-dir:  %s\n' "$(resolve_cert_dir)"
     printf 'bin-path:  %s\n' "$NEBULA_BIN_PATH"
     printf 'lib-dir:   %s\n' "$MANAGER_LIB_DIR"
+    printf 'ui-backend: %s\n' "$(ui_backend)"
     printf 'update-repo: %s@%s\n' "${REPO_SLUG:-jordanhillis/nebula-manager}" "${REPO_REF:-main}"
 }
 
@@ -234,6 +236,7 @@ main() {
         bench)          shift; bench_cli "$@" ;;
         diag|diagnose)  shift; diag_cli "$@" ;;
         config|conf)    shift; config_cli "$@" ;;
+        ui)             ui_report ;;
         auto-update)
             load_global_config
             AUTO_UPDATE=true

@@ -719,6 +719,12 @@ read_nebula_config() {
     if is_root || sudo -n true 2>/dev/null; then
         elevate cat "$config_file" 2>/dev/null && return 0
     fi
+    # Unreadable and no cached credentials: ask before prompting for a password.
+    if [[ -t 0 && -t 1 ]] && command -v sudo >/dev/null 2>&1; then
+        local a
+        read -rp "$(show_status 'question') ${config_file} is not readable. Read it with sudo? [y/N]: " a
+        [[ "$a" =~ ^[Yy] ]] && { elevate_why "read $config_file" cat "$config_file" && return 0; }
+    fi
     return 1
 }
 
@@ -884,6 +890,11 @@ find_config_template() {
     return 1
 }
 
+# Quick heuristic: does this look like a nebula-manager.conf (not Nebula's config.yml)?
+looks_like_manager_conf() {
+    grep -qE '^[[:space:]]*\[(global|server\.)' "$1" 2>/dev/null
+}
+
 # install_config_template <dest> [--force] : copy the bundled template (offline).
 install_config_template() {
     local dest="$1" force="${2:-}"
@@ -940,7 +951,8 @@ config_cli() {
             install_config_template "$SERVER_CONF" "$force"
             ;;
         refresh|update) refresh_config_template "$SERVER_CONF" ;;
-        *) log_error "Unknown 'config' subcommand: $sub (path|init|refresh)"; return 2 ;;
+        edit) "${EDITOR:-${VISUAL:-vi}}" "$SERVER_CONF" ;;
+        *) log_error "Unknown 'config' subcommand: $sub (path|init|refresh|edit)"; return 2 ;;
     esac
 }
 
@@ -1003,7 +1015,8 @@ load_global_config() {
 
 # Function to load server variables from conf file
 load_server_config() {
-    local server="$1"
+    local server="$1" conf_src
+    conf_src="$(readable_nebula_config "$SERVER_CONF")" || return 1
     eval "$(
         awk -F= -v s="server.$server" '
             { sub(/\r$/, "") }
@@ -1023,41 +1036,78 @@ load_server_config() {
                 gsub("-", "_", key)
                 printf "export %s=\"%s\"\n", key, $2
             }
-        ' "$SERVER_CONF"
+        ' "$conf_src"
     )"
+    [[ "$conf_src" != "$SERVER_CONF" ]] && rm -f "$conf_src"
+}
+
+# Offer to open a config file in the user's editor (interactive only).
+_offer_edit_config() {
+    [[ -t 0 && -t 1 ]] || return 0
+    local e
+    read -rp "$(show_status 'question') Open ${SERVER_CONF} in an editor now? [Y/n]: " e
+    [[ "$e" =~ ^[Nn] ]] && return 0
+    "${EDITOR:-${VISUAL:-vi}}" "$SERVER_CONF"
 }
 
 # First-run: no config found -> ask the user what to do (never a silent download).
+# The reason is shown INSIDE the dialog because whiptail clears the screen, and
+# invalid input loops back to the menu instead of exiting.
 first_run_config_setup() {
     local user_conf="${XDG_CONFIG_HOME:-$HOME/.config}/nebula-manager/nebula-manager.conf"
-    echo -e "$(show_status 'warning') ${YELLOW}No configuration found at:${RESET} ${CYAN}$SERVER_CONF${RESET}"
-    local choice
-    choice="$(ui_menu "Nebula Manager" "No configuration found. What would you like to do?" \
-        "create"   "Create one at $user_conf (from the bundled template)" \
-        "browse"   "Use an existing config file (browse)..." \
-        "download" "Download the latest template from ${REPO_SLUG:-the repo}" \
-        "cancel"   "Cancel")" || choice="cancel"
-    case "$choice" in
-        create)
-            CONF_OVERRIDE="$user_conf"; SERVER_CONF="$user_conf"
-            install_config_template "$SERVER_CONF" --force || return 1
-            log_info "Edit it (add your servers) and re-run. Path: $SERVER_CONF"
-            return 0 ;;
-        browse)
-            local picked; picked="$(ui_fselect "Select nebula-manager.conf" "Path to your config file:" "$HOME")"
-            if [[ -n "$picked" && -f "$picked" ]]; then
-                CONF_OVERRIDE="$picked"; SERVER_CONF="$picked"
-                log_success "Using config: $SERVER_CONF"
-                return 0
-            fi
-            log_error "No valid config file selected."; return 1 ;;
-        download)
-            CONF_OVERRIDE="$user_conf"; SERVER_CONF="$user_conf"
-            refresh_config_template "$SERVER_CONF" || return 1
-            log_info "Edit it and re-run. Path: $SERVER_CONF"
-            return 0 ;;
-        *) log_info "Canceled."; return 1 ;;
-    esac
+    local reason="No configuration found at:
+${SERVER_CONF}
+
+What would you like to do?"
+    while true; do
+        local choice
+        choice="$(ui_menu "Nebula Manager - configuration" "$reason" \
+            "create"   "Create a new config (from bundled template)" \
+            "browse"   "Use an existing config file..." \
+            "download" "Download the latest template" \
+            "quit"     "Quit")" || choice="quit"
+        case "$choice" in
+            create)
+                CONF_OVERRIDE="$user_conf"; SERVER_CONF="$user_conf"
+                if install_config_template "$SERVER_CONF" --force; then
+                    log_success "Created $SERVER_CONF"
+                    _offer_edit_config
+                    return 0
+                fi
+                reason="Could not create $SERVER_CONF.
+
+What would you like to do?"
+                continue ;;
+            download)
+                CONF_OVERRIDE="$user_conf"; SERVER_CONF="$user_conf"
+                if refresh_config_template "$SERVER_CONF"; then
+                    log_success "Wrote $SERVER_CONF"
+                    _offer_edit_config
+                    return 0
+                fi
+                reason="Download failed (offline?).
+
+What would you like to do?"
+                continue ;;
+            browse)
+                local picked
+                picked="$(ui_fselect "Select nebula-manager.conf" "Select your existing nebula-manager.conf" "${HOME:-$PWD}")"
+                if [[ -n "$picked" && -f "$picked" ]]; then
+                    if looks_like_manager_conf "$picked"; then
+                        CONF_OVERRIDE="$picked"; SERVER_CONF="$picked"
+                        log_success "Using config: $SERVER_CONF"
+                        return 0
+                    fi
+                    reason="That file has no [global]/[server.*] sections.
+Pick a nebula-manager.conf (not Nebula's config.yml)."
+                    continue
+                fi
+                reason="No valid config file selected.
+Pick an existing file, or another option below."
+                continue ;;
+            *) log_info "No configuration selected - exiting."; return 1 ;;
+        esac
+    done
 }
 
 # Function for server selection
@@ -1065,6 +1115,16 @@ select_nebula_server() {
     if [[ ! -f "$SERVER_CONF" ]]; then
         first_run_config_setup || exit 1
     fi
+
+    # The config may be owned by the service user/root; get a readable copy
+    # (prompting for sudo if needed) before parsing it.
+    local conf_src conf_tmp=""
+    if ! conf_src="$(readable_nebula_config "$SERVER_CONF")"; then
+        log_error "Cannot read ${CYAN}$SERVER_CONF${RED} (permission denied)."
+        log_info "Re-run with sudo, or choose a readable nebula-manager.conf."
+        return 1
+    fi
+    [[ "$conf_src" != "$SERVER_CONF" ]] && conf_tmp="$conf_src"
 
     local -a servers
     mapfile -t servers < <(
@@ -1091,18 +1151,21 @@ select_nebula_server() {
         /^[[:space:]]*enabled[[:space:]]*=[[:space:]]*true[[:space:]]*$/ {
             print server "\t" dir
         }
-    ' "$SERVER_CONF"
+    ' "$conf_src"
     )
+    [[ -n "$conf_tmp" ]] && rm -f "$conf_tmp"
 
     if (( ${#servers[@]} == 0 )); then
-        log_error "No enabled servers found in config (${ORANGE}$SERVER_CONF${RED})"
+        log_error "No enabled [server.*] entries in ${CYAN}$SERVER_CONF"
+        log_info "This must be a nebula-manager.conf (with [global] and [server.NAME]) - not Nebula's config.yml."
         exit 1
     fi
 
-    local s
+    local s sname
     for s in "${servers[@]}"; do
-        [[ "$s" == nebula-example* ]] && {
-            log_error "Placeholder server [$s] found. Please edit ${CYAN}$SERVER_CONF"
+        sname="${s%%$'\t'*}"
+        [[ "$sname" == nebula-example* ]] && {
+            log_error "Placeholder server [$sname] found in ${CYAN}$SERVER_CONF${RED} - please replace it with your own servers."
             exit 1
         }
     done

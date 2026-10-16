@@ -58,4 +58,10 @@ assert_file "config init via CLI (offline)" "$SANDBOX/cli.conf"
 assert_contains "CLI-created config has [global]" "$(cat "$SANDBOX/cli.conf")" "[global]"
 assert_eq "config init used no sudo" "$(sudo_count)" "0"
 
+# --- config-type detection (nebula-manager.conf vs Nebula config.yml) ---
+printf '[global]\nbin_path=/usr/local/bin\n[server.a]\nenabled=true\n' > "$SANDBOX/mgr.conf"
+printf 'pki:\n  ca: ca.crt\nlisten:\n  port: 4242\n' > "$SANDBOX/nebula.yml"
+if looks_like_manager_conf "$SANDBOX/mgr.conf"; then _ok "manager conf detected"; else _bad "manager conf detected"; fi
+if looks_like_manager_conf "$SANDBOX/nebula.yml"; then _bad "Nebula config.yml rejected"; else _ok "Nebula config.yml rejected"; fi
+
 harness_summary
