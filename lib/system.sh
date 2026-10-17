@@ -144,6 +144,7 @@ declare -gA PKG_RH_OVERRIDE=(
 declare -gA PKG_ARCH_OVERRIDE=(
   [ping]="iputils"
   [whiptail]="libnewt"
+  [yq]="go-yq"
 )
 
 # Function to detect architecture
@@ -197,6 +198,13 @@ pkg_for() {
   printf '%s' "${PKG_BASE[$bin]}"
 }
 
+# yq is only used by the firewall editor, and it must be mikefarah's v4.
+# The `yq` in the Ubuntu/Mint/Debian archives is the incompatible Python v3.
+yq_is_v4() {
+  command -v yq >/dev/null 2>&1 || return 1
+  yq --version 2>/dev/null | grep -qiE 'mikefarah|version v?4\.'
+}
+
 # Function to check required packages. Returns 0 when nothing is missing (even
 # on an unknown distro) and 1 only when required tools are actually absent.
 check_dependencies() {
@@ -206,7 +214,8 @@ check_dependencies() {
   install_cmd="$(install_cmd_for "$distro")"
   local missing=() bin pkg
   for bin in "${!PKG_BASE[@]}"; do
-    [[ "$bin" == "iperf3" ]] && continue      # optional
+    # optional tools are not startup blockers
+    [[ "$bin" == "iperf3" || "$bin" == "yq" ]] && continue
     command -v "$bin" &>/dev/null && continue
     pkg="$(pkg_for "$bin")"
     [[ " ${missing[*]} " == *" $pkg "* ]] || missing+=("$pkg")
@@ -1660,6 +1669,12 @@ check_script_update() {
 manage_firewall() {
     local config_file="$NEBULA_DIR/config.yml"
     [[ -f "$config_file" ]] || { log_error "Config file not found: $config_file"; return 1; }
+    if ! yq_is_v4; then
+        log_error "The firewall editor requires mikefarah yq v4."
+        log_info "Fedora: 'sudo dnf install yq'  |  Arch/CachyOS: 'sudo pacman -S go-yq'"
+        log_info "Ubuntu/Mint/Debian: install the upstream binary (docs/linux-distros.md)."
+        return 1
+    fi
     while true; do
         show_menu_header "$MENU_PATH" "Config" "Firewall"
         echo -e "        ${BOLD}${YELLOW}1.${RESET} $(get_icon 'left-arrow')Configure Inbound Rules ${GREEN}(Default Action: ${RED}$(yq -r ".firewall.inbound_action" "$config_file" 2>/dev/null)${GREEN})${RESET}"

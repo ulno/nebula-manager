@@ -255,14 +255,24 @@ portable install/README. This is essentially `cert bundle` × N + shared assets.
 
 ## Story 2 — The students join
 
-Names: **Alex** (Windows 11), **Bianca** (Linux/Fedora), **Chen** (macOS).
+Names: **Alex** (Windows 11), **Bianca** (Ubuntu), **Chen** (macOS).
 Each receives `student-group-1/<their>-nebula-bundle.zip` (or the whole folder)
 from Theprof.
 
-### Bianca — Linux ✅ (fully scriptable)
+### Bianca — Ubuntu ✅ (fully scriptable; Debian and Mint work the same)
+
+Per-distribution details (Fedora/RHEL, Arch/CachyOS, SELinux, firewalls) are in
+**[docs/linux-distros.md](linux-distros.md)**.
 
 ```bash
-sudo dnf install -y nebula   # or install the binary from a release
+# Nebula + tooling from the Ubuntu archive
+sudo apt update
+sudo apt install -y nebula gawk curl findutils grep jq sed sudo systemd tar wget \
+                    coreutils iperf3 iputils-ping whiptail zip
+# yq v4 (only the firewall editor needs it): Ubuntu's archive yq is the old Python v3
+sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+sudo chmod +x /usr/local/bin/yq
+
 git clone https://github.com/<you>/nebula-manager
 cd nebula-manager
 ./nebula-manager config init
@@ -272,9 +282,13 @@ sudo install -d /etc/nebula
 sudo cp ~/nb/{ca.crt,bianca.*.crt,bianca.*.key,config.yml.template} /etc/nebula/
 sudo mv /etc/nebula/config.yml.template /etc/nebula/config.yml
 # edit /etc/nebula/config.yml: static_host_map + lighthouse.hosts
-./nebula-manager          # Maintenance -> Install to system -> Toggle service
+./nebula-manager          # Maintenance -> Toggle Nebula Service
 ./nebula-manager diag     # confirm 10.101.0.x/24 up, cert valid
 ```
+
+> **Fedora:** `sudo dnf install -y nebula ... yq ...` (`yq` is v4 there).
+> **Arch/CachyOS:** `sudo pacman -S nebula go-yq libnewt ...`.
+> The rest of the steps are identical.
 
 ### Chen — macOS ⚙️ partial (bash tool works; service = launchd)
 
@@ -293,7 +307,7 @@ brew install nebula
 
 nebula-manager is a bash tool; on Windows we ship the bundle plus instructions.
 
-- **Option A (recommended):** WSL2 — follow Bianca's Linux steps inside WSL
+- **Option A (recommended):** WSL2 — follow Bianca's Ubuntu steps inside WSL
   (Nebula's TUN still binds to the host via WSL networking).
 - **Option B (native):** download `nebula.exe`/`nebula-cert.exe` from the Nebula
   release matching the bundle, then place `ca.crt`, `alex.*.crt`, `alex.*.key`

@@ -23,7 +23,19 @@ assert_eq "redhat ping package" "$(pkg_for ping)" "iputils"
 detect_distro() { echo arch; }
 assert_eq "arch ping package"     "$(pkg_for ping)"     "iputils"
 assert_eq "arch whiptail package" "$(pkg_for whiptail)" "libnewt"
+assert_eq "arch yq package"       "$(pkg_for yq)"       "go-yq"
 assert_eq "arch awk uses default" "$(pkg_for awk)"      "gawk"
+
+# --- yq v4 detection (firewall editor requirement) ---
+cat > "$SANDBOX/bin/yq" <<'MOCK'
+#!/usr/bin/env bash
+echo "yq (https://github.com/mikefarah/yq/) version v4.44.1"
+MOCK
+chmod +x "$SANDBOX/bin/yq"
+if yq_is_v4; then _ok "mikefarah yq v4 recognised"; else _bad "mikefarah yq v4 recognised"; fi
+printf '#!/usr/bin/env bash\necho "yq 3.1.0"\n' > "$SANDBOX/bin/yq"; chmod +x "$SANDBOX/bin/yq"
+if yq_is_v4; then _bad "python yq v3 rejected"; else _ok "python yq v3 rejected"; fi
+rm -f "$SANDBOX/bin/yq"
 
 # --- a missing dependency on arch -> exit 1 + pacman hint ---
 PKG_BASE[frobnicate]="frobnicate-tool"

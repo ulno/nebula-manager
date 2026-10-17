@@ -117,25 +117,37 @@ The entrypoint auto-discovers `lib/` in the following order:
 Nebula Manager checks for required tools on first run and prints an install
 command if any are missing (skippable via `ignore_dependency_check` in the conf).
 
-**Required:** `curl`, `wget`, `tar`, `jq`, `yq`, `systemd` (`systemctl`), `iputils-ping`
-**Optional:** `iperf3` (bandwidth tests), `whiptail` (graphical file/dir picker; menus are plain by default), `zip` (client bundles; falls back to `tar.gz`)
+**Required:** `gawk` (`awk`), `curl`, `findutils` (`find`), `grep`, `jq`, `sed`, `sudo`, `systemd` (`systemctl`), `tar`, `wget`, `coreutils` (`sha256sum`), `iputils-ping`
+**Optional:** `yq` — **mikefarah v4 only**, used by the firewall editor (Fedora `yq`, Arch `go-yq`, or the upstream binary); `iperf3` (bandwidth tests); `whiptail` (graphical file/dir picker; menus are plain by default); `zip` (client bundles; falls back to `tar.gz`)
+
+> 📖 Per-distribution manuals (Ubuntu/Debian/Mint, Fedora/RHEL, Arch/CachyOS,
+> including SELinux and firewall notes): **[docs/linux-distros.md](docs/linux-distros.md)**.
 
 ### Install all dependencies
 
-**<img src="https://img.shields.io/badge/Debian-A81D33?logo=debian&logoColor=white" alt="Debian" height="20"/> / <img src="https://img.shields.io/badge/Ubuntu-E95420?logo=ubuntu&logoColor=white" alt="Ubuntu" height="20"/>**
+**<img src="https://img.shields.io/badge/Debian-A81D33?logo=debian&logoColor=white" alt="Debian" height="20"/> / <img src="https://img.shields.io/badge/Ubuntu-E95420?logo=ubuntu&logoColor=white" alt="Ubuntu" height="20"/> / <img src="https://img.shields.io/badge/Linux%20Mint-87CF3E?logo=linuxmint&logoColor=white" alt="Linux Mint" height="20"/>**
 ```bash
 sudo apt update
-sudo apt install -y awk curl findutils grep jq sed sudo systemd tar wget yq coreutils iperf3 iputils-ping whiptail zip
+sudo apt install -y gawk curl findutils grep jq sed sudo systemd tar wget coreutils iperf3 iputils-ping whiptail zip
 ```
-**<img src="https://img.shields.io/badge/RHEL-EE0000?logo=redhat&logoColor=white" alt="RHEL" height="20"/> / <img src="https://img.shields.io/badge/CentOS-262577?logo=centos&logoColor=white" alt="CentOS" height="20"/> / <img src="https://img.shields.io/badge/Rocky%20Linux-10B981?logo=rockylinux&logoColor=white" alt="Rocky Linux" height="20"/> / <img src="https://img.shields.io/badge/AlmaLinux-3D348B?logo=almalinux&logoColor=white" alt="AlmaLinux" height="20"/>
+⚠️ **Do not** `apt install yq` on Ubuntu/Mint/Debian 12 — that is the incompatible Python yq v3. Install mikefarah's v4 binary:
 ```bash
-sudo dnf install -y curl findutils grep jq sed sudo systemd tar wget yq coreutils iperf3 iputils newt zip
+sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+sudo chmod +x /usr/local/bin/yq && yq --version   # should say v4.x
 ```
+(Debian 13/trixie also has `yq-go` in its archive.)
+
+**<img src="https://img.shields.io/badge/Fedora-51A2DA?logo=fedora&logoColor=white" alt="Fedora" height="20"/> / <img src="https://img.shields.io/badge/RHEL-EE0000?logo=redhat&logoColor=white" alt="RHEL" height="20"/> / <img src="https://img.shields.io/badge/CentOS-262577?logo=centos&logoColor=white" alt="CentOS" height="20"/> / <img src="https://img.shields.io/badge/Rocky%20Linux-10B981?logo=rockylinux&logoColor=white" alt="Rocky Linux" height="20"/> / <img src="https://img.shields.io/badge/AlmaLinux-3D348B?logo=almalinux&logoColor=white" alt="AlmaLinux" height="20"/>
+```bash
+sudo dnf install -y gawk curl findutils grep jq sed sudo systemd tar wget coreutils iperf3 iputils newt zip yq
+```
+(Fedora's `yq` is mikefarah v4; `newt` provides `whiptail`.)
+
 **<img src="https://img.shields.io/badge/Arch%20Linux-1793D1?logo=arch-linux&logoColor=white" alt="Arch Linux" height="20"/> / <img src="https://img.shields.io/badge/CachyOS-00A3E0?logo=arch-linux&logoColor=white" alt="CachyOS" height="20"/>
 ```bash
-sudo pacman -S --needed gawk curl findutils grep jq sed sudo systemd tar wget yq coreutils iperf3 iputils libnewt zip
+sudo pacman -S --needed gawk curl findutils grep jq sed sudo systemd tar wget go-yq coreutils iperf3 iputils libnewt zip
 ```
-(`whiptail` is provided by `libnewt` on Arch family.)
+(`go-yq` provides mikefarah yq v4 as `/usr/bin/yq`; `libnewt` provides `whiptail`.)
 
 Supported distributions are auto-detected from `/etc/os-release` (Debian/Ubuntu, RHEL
 family, Arch/CachyOS). On an unrecognised distribution the tool still runs as long
@@ -621,6 +633,14 @@ The first story makes the case for the **`import`** wizard — on a host where N
 is *already running*, discover the installation and offer to generate
 `nebula-manager.conf` instead of asking for a config that doesn't exist yet.
 **This is now implemented** (`nebula-manager import`).
+
+### Distribution guides
+
+- **[docs/linux-distros.md](docs/linux-distros.md)** — install Nebula and
+  nebula-manager's tools on **Ubuntu/Debian/Linux Mint**, **Fedora/RHEL**, and
+  **Arch Linux/CachyOS**. Covers distro package contents, service/config paths,
+  SELinux (Fedora), host firewalls (ufw/firewalld/nftables), upstream binaries,
+  and the **yq v4** requirement for the firewall editor.
 
 ---
 
