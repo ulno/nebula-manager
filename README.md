@@ -182,6 +182,30 @@ matches the convention the rest of your certs follow.
 [?] Enter the IP address [10.100.0.4/24]:
 ```
 
+#### Mobile devices (Android / iOS)
+
+The same TUI entry asks **“Is this certificate for a phone/tablet (Mobile Nebula)?”**.
+For a mobile device you give it the **public key exported by the app** (the app
+generates the keypair; the private key never leaves the phone), and it emits a
+**QR code** you scan in the app:
+
+```bash
+# device exports device.pub from the app; then:
+./nebula-manager sign --cert-dir ~/keys/nebula \
+    --in-pub ~/device.pub \
+    --name phone.mesh.example --ip 10.100.0.6/24 --groups mobile \
+    --qr ~/keys/nebula/phone.png
+```
+
+- `--in-pub KEY.pub` — sign the device's public key; **no `.key` is written**.
+- `--qr OUT.png` — write a QR code of the signed certificate to scan/copy into the
+  app. (The QR contains the certificate only; the device already has the key.)
+- Name/IP are still auto-suggested if omitted.
+
+The app also needs the **CA certificate** (paste `ca.crt`, or scan a QR made with
+`qrencode`), plus the lighthouse's overlay IP and public `host:port`. See
+`docs/user-stories.md` (Story 1, Phase 2b / Story 2, Dana) for the full flow.
+
 ### Resolution precedence
 
 1. `--cert-dir <path>` (CLI flag — highest priority)
@@ -274,6 +298,8 @@ file/directory browsing automatically uses `whiptail` when it is installed.
 ./nebula-manager ca --name my-ca --duration 999999h --cert-dir ~/keys/nebula
 ./nebula-manager sign --name host1 --ip 10.42.0.2/24 --groups servers --cert-dir ~/keys/nebula
 ./nebula-manager sign --cert-dir ~/keys/nebula   # name+IP auto-suggested from existing certs
+./nebula-manager sign --cert-dir ~/keys/nebula --in-pub ~/phone.pub --qr ~/keys/nebula/phone.png
+#   ^ mobile: sign the device-generated public key; no .key written, QR for the app
 ./nebula-manager cert list
 ./nebula-manager cert expiry 30         # certs expiring within 30 days
 ./nebula-manager cert bundle host1 ./bundles
@@ -467,6 +493,7 @@ What it covers:
 |---|---|
 | `tests/test_pki_unprivileged.sh` | CA + cert signing + bundling work with **no root**, in a `mktemp -d` workspace |
 | `tests/test_pki_suggest.sh` | client-cert name/IP suggestions: mesh-domain suffix + next free overlay address |
+| `tests/test_mobile_cert.sh` | mobile certs: `--in-pub` signs a device key (no `.key` written), `--qr` emits a QR, plus the TUI “mobile device” flow |
 | `tests/test_sudo_mock.sh` | `sudo` is invoked **only** for privileged target dirs; failure is surfaced |
 | `tests/test_resolve_dir.sh` | `--cert-dir` > `NEBULA_KEYS_DIR` > saved selection > legacy dir > default |
 | `tests/test_port.sh` | listen-port resolution: `listen.port` → auto-detect → `default_port` |
@@ -653,6 +680,10 @@ is *already running*, discover the installation and offer to generate
       (idempotent add, informational `role`/`host`).
 - [ ] **`client-setup <bundle>`** – install a bundle + service on a new host.
 - [ ] **`profile create`** – group collections (N bundles + CA + README/install).
+- [x] **Mobile certificates** – `sign --in-pub KEY.pub` signs a device-generated
+      public key (no `.key` written) and `--qr OUT.png` emits the QR scanned by
+      **Mobile Nebula** (Android/iOS); also available in the TUI with the
+      “Is this certificate for a phone/tablet?” prompt.
 - [ ] **Pod/container support** – detect Nebula running under `podman`/`docker` and
       route lifecycle actions through the container runtime instead of `systemctl`.
 - [ ] **macOS `launchd`** service management; **Windows** guidance (WSL documented).

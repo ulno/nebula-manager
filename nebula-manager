@@ -317,7 +317,9 @@ Global options:
 Commands:
   (none)                          Interactive TUI (menu-driven)
   ca [create] --name NAME [...]   Create a certificate authority (unprivileged)
-  sign [--name N] [--ip CIDR] [...] Sign a client certificate (name/IP auto-suggested)
+  sign [--name N] [--ip CIDR] [--in-pub KEY.pub] [--qr OUT.png] [...]
+                                  Sign a client cert (name/IP auto-suggested;
+                                  --in-pub for mobile: the key stays on the device)
   cert list|expiry|remove|bundle  Certificate operations
   bench server|client [...]       iperf3 benchmarks
   diag                            Diagnostics (TUN IP, UDP socket, cert expiry)

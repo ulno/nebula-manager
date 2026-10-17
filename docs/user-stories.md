@@ -60,7 +60,8 @@ phases below are the **expert/automation** equivalents of the same menus.
 - `listen.port: 0` (the OS assigns the UDP port, e.g. `54143`).
 
 He does **not** use nebula-manager yet. He wants to: (a) import this setup,
-(b) add two more home machines, (c) hand out per-student profiles.
+(b) add two more home machines **and his Android phone**, (c) hand out
+per-student profiles.
 
 ```mermaid
 graph TD
@@ -68,11 +69,13 @@ graph TD
   U1["theprof-framework - 10.100.0.2"]
   U3["theprof3 - 10.100.0.4"]
   U4["theprof4 - 10.100.0.5"]
+  P["theprof-android - 10.100.0.6"]
   G1["student-group-1 - 10.101.0.0/24"]
   G2["student-group-2 - 10.102.0.0/24"]
   L --- U1
   L --- U3
   L --- U4
+  L --- P
   L --- G1
   L --- G2
 ```
@@ -211,6 +214,67 @@ sudo cp ~/nb/config.yml.template /etc/nebula/config.yml   # then edit static_hos
 places files under `/etc/nebula`, patches the unit's config path, enables the
 service, and runs `diag` — elevating only for the individual system steps.
 
+### Phase 2b — Theprof's Android phone (✅ today, mobile app)
+
+Theprof wants the mesh on his phone while travelling. Mobile clients don't run
+`nebula-manager`; the CA host prepares the certificate and the phone joins via
+the **Mobile Nebula** app (Defined Networking).
+
+**Which store?** The official app is on **Google Play** (Android) and the
+**App Store** (iOS). It is **not on F-Droid** — that request was closed as not
+planned (the app has no FOSS license). If he avoids Google Play, the project
+publishes **`MobileNebula.apk`** on its GitHub releases page
+(`DefinedNet/mobile_nebula`), which can be installed/updated with a tool like
+Obtainium.
+
+The key stays on the device: the app generates the keypair and exports only the
+**public key**; the CA host signs it. Never copy `ca.key` to a phone.
+
+1. Install **Mobile Nebula**, tap **+**, and create a site (e.g. `theprof.mesh`).
+2. Open the site's **Certificate** screen and **share/export the public key**
+   (e.g. `theprof-android.pub`) to the CA host.
+3. On the CA host, sign that public key and emit a QR code for the certificate:
+
+   ```bash
+   cd nebula-manager                       # your checkout
+   ./nebula-manager sign --cert-dir ~/keys/nebula \
+     --in-pub ~/theprof-android.pub \
+     --name theprof-android.theprof.mesh \
+     --ip 10.100.0.6/24 --groups mobile \
+     --qr ~/keys/nebula/theprof-android.png
+   ```
+
+   TUI equivalent: *Certificates ▸ Generate Client Certificate* → answer **yes**
+   to “Is this certificate for a phone/tablet (Mobile Nebula)?” and give the
+   exported public key; it writes no `.key` and defaults the QR to
+   `<cert-dir>/<name>.png`.
+
+   (`--qr` encodes the **certificate only** — the phone already holds the
+   matching private key.)
+4. In the app's **Certificate** screen scan `theprof-android.png` (or paste the
+   `.crt` text). In the **CA** screen paste `ca.crt` (or scan a QR made with
+   `qrencode -o ca.png < ca.crt`, if `qrencode` is installed).
+5. In the app's **Hosts/lighthouse** section add the lighthouse: Nebula IP
+   `10.100.0.1`, underlay `vps.theprof.demo:4545` (his lighthouse port),
+   **lighthouse: on**.
+6. Save, allow the VPN profile, and enable the site. Verify from the laptop:
+
+   ```bash
+   ping 10.100.0.6            # the phone's overlay IP
+   ```
+
+Notes:
+
+- The cert name follows the same convention (`theprof-android.theprof.mesh`);
+   `10.100.0.6/24` is the next free address after `.4`/`.5`.
+- Group `mobile` is handy for firewall rules. The current config allows all, so
+   nothing else is needed here; restrict/allow `mobile` wherever inbound rules
+   are tightened.
+- Recent app versions support **Always On** and importing a full `config.yml`;
+   the cert + CA + lighthouse flow above is the portable path.
+- `nebula-manager sign --in-pub … --qr …` (and the TUI mobile question) handles
+   this step; it never writes a private key for a device-generated key.
+
 ### Phase 3 — Two student groups of three machines (⚙️ planned "profiles")
 
 **TUI:** ⚙️ planned *Profiles ▸ Create group*.
@@ -255,9 +319,10 @@ portable install/README. This is essentially `cert bundle` × N + shared assets.
 
 ## Story 2 — The students join
 
-Names: **Alex** (Windows 11), **Bianca** (Ubuntu), **Chen** (macOS).
-Each receives `student-group-1/<their>-nebula-bundle.zip` (or the whole folder)
-from Theprof.
+Names: **Alex** (Windows 11), **Bianca** (Ubuntu), **Chen** (macOS), **Dana** (iPhone).
+Desktop students receive `student-group-1/<their>-nebula-bundle.zip` (or the whole
+folder) from Theprof; Dana receives her signed cert + `ca.crt` (and an optional
+QR) for the mobile app instead.
 
 ### Bianca — Ubuntu ✅ (fully scriptable; Debian and Mint work the same)
 
@@ -302,6 +367,41 @@ brew install nebula
 ./nebula-manager diag                 # diagnostics work
 # place files under /etc/nebula (sudo), then load a LaunchDaemon by hand
 ```
+
+### Dana — iPhone ✅ (App Store mobile app)
+
+Dana joins from iOS. There is no bash/`nebula-manager` on the phone (and no
+sideloading), so Theprof prepares her credentials and she imports them into
+**Mobile Nebula** from the App Store (free, iOS 15+). The App Store is the only
+supported install path.
+
+1. Dana installs **Mobile Nebula**, taps **+**, and creates a site
+   (`student-group-1`).
+2. In the site's **Certificate** screen she shares her device **public key**
+   (`dana-iphone.pub`) with Theprof (AirDrop / Files / Mail).
+3. Theprof signs it on the CA host (the private key never leaves her phone):
+
+   ```bash
+   ./nebula-manager sign --cert-dir ~/keys/nebula \
+     --in-pub ~/dana-iphone.pub \
+     --name dana-iphone.student-group-1.theprof.mesh \
+     --ip 10.101.0.10/24 --groups students \
+     --qr ~/keys/nebula/dana-iphone.png
+   ```
+
+4. He sends back `dana-iphone.png` (or the `.crt`) **and** `ca.crt`. She scans
+   the cert in the **Certificate** screen, pastes `ca.crt` in the **CA** screen,
+   and adds the lighthouse (`10.100.0.1` → `vps.theprof.demo:4545`).
+5. Save, allow the VPN configuration, and enable the site. Verify from another
+   group member: `ping 10.101.0.10`.
+
+Notes:
+
+- The bundle `.zip` is for the desktop Nebula binary; mobile students get the
+   cert + CA (+ optional QR), not the zip.
+- `10.101.0.10/24` is a free address in group 1's /24 (pick any unused one).
+- Android works the same way (see Story 1, Phase 2b); the mobile app is **not**
+   on F-Droid.
 
 ### Alex — Windows ⚙️ manual today (documented bridge)
 

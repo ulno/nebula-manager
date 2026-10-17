@@ -305,25 +305,46 @@ pki_ca_create() {
 
 # Non-interactive cert signing. Consumes (via environment):
 #   SIGN_NAME, SIGN_IP, SIGN_GROUPS, SIGN_SUBNETS, SIGN_DURATION_H, CERT_DIR
+#   SIGN_IN_PUB  optional: a device-generated public key. When set the private
+#                key stays on the device (mobile apps) and no .key is written.
+#   SIGN_QR      optional: path to write a QR-code PNG of the signed cert.
 pki_sign() {
     local cert_dir="${CERT_DIR:-$(resolve_cert_dir)}"
     local bin; bin="$(pki_cert_bin)" || return 1
     local name="${SIGN_NAME:?certificate name is required}"
     local ip="${SIGN_IP:?certificate IP is required}"
+    local in_pub="${SIGN_IN_PUB:-}"
     local ca_crt ca_key
     ca_crt="$(find_ca_crt "$cert_dir")" || { log_error "CA certificate not found in $cert_dir"; return 1; }
     ca_key="$(find_ca_key "$cert_dir")" || { log_error "CA key not found in $cert_dir"; return 1; }
 
+    if [[ -n "$in_pub" && ! -f "$in_pub" ]]; then
+        log_error "Device public key not found: $in_pub"
+        return 1
+    fi
+
+    local out_crt="$cert_dir/$name.crt"
     local -a args=("$bin" sign -name "$name" -ip "$ip"
         -ca-crt "$ca_crt" -ca-key "$ca_key"
-        -out-crt "$cert_dir/$name.crt" -out-key "$cert_dir/$name.key")
+        -out-crt "$out_crt")
+    if [[ -n "$in_pub" ]]; then
+        args+=(-in-pub "$in_pub")      # no -out-key: the key stays on the device
+    else
+        args+=(-out-key "$cert_dir/$name.key")
+    fi
     [[ -n "${SIGN_DURATION_H:-}" ]] && args+=(-duration "${SIGN_DURATION_H}h")
     [[ -n "${SIGN_GROUPS:-}"     ]] && args+=(-groups "$SIGN_GROUPS")
     [[ -n "${SIGN_SUBNETS:-}"    ]] && args+=(-subnets "$SIGN_SUBNETS")
+    [[ -n "${SIGN_QR:-}"         ]] && args+=(-out-qr "$SIGN_QR")
 
     ensure_dir "$cert_dir" || return 1
     if "${args[@]}"; then
-        log_success "Certificate signed: $cert_dir/$name.crt and $cert_dir/$name.key"
+        if [[ -n "$in_pub" ]]; then
+            log_success "Certificate signed for device key: $out_crt"
+        else
+            log_success "Certificate signed: $out_crt and $cert_dir/$name.key"
+        fi
+        [[ -n "${SIGN_QR:-}" ]] && log_success "QR code written: ${SIGN_QR}"
         return 0
     fi
     log_error "Failed to sign certificate."
@@ -465,14 +486,14 @@ suggest_next_cert_ip() {
 # Interactive cert signing (TUI wrapper)
 generate_nebula_cert() {
     local cert_dir; cert_dir="$(resolve_cert_dir)"
-    local cert_gen_name cert_gen_ip cert_gen_groups include_subnets_choice cert_gen_subnets cert_gen_duration
+    local cert_gen_name="" cert_gen_ip="" cert_gen_groups="" include_subnets_choice="" cert_gen_subnets="" cert_gen_duration=""
     ensure_dir "$cert_dir" || { log_error "Failed to create $cert_dir."; return 1; }
 
     local suggested_name; suggested_name="$(suggest_cert_name "$cert_dir")"
     local name_prompt="Enter the certificate name: "
     [[ -n "$suggested_name" ]] && name_prompt="Enter the certificate name [${suggested_name}]: "
     while [[ -z "$cert_gen_name" ]]; do
-        read -p "$(show_status 'question') $name_prompt" cert_gen_name
+        read -p "$(show_status 'question') $name_prompt" cert_gen_name || { log_info "Canceled."; return 1; }
         [[ -z "$cert_gen_name" && -n "$suggested_name" ]] && cert_gen_name="$suggested_name"
     done
 
@@ -483,11 +504,25 @@ generate_nebula_cert() {
         [[ "$overwrite_choice" != "y" ]] && { log_info "Certificate generation aborted."; return; }
     fi
 
+    # Mobile (Android/iOS): the app generates the keypair and exports only the
+    # public key, so we sign that and emit a QR the app can scan. The private key
+    # never leaves the device.
+    local cert_is_mobile=0 cert_gen_pub="" cert_gen_qr=""
+    if ui_yesno "Mobile device" "Is this certificate for a phone/tablet (Mobile Nebula)?"; then
+        cert_is_mobile=1
+        while [[ -z "$cert_gen_pub" ]]; do
+            read -p "$(show_status 'question') Path to the device public key (exported from the app): " cert_gen_pub \
+                || { log_info "Canceled."; return 1; }
+            [[ -z "$cert_gen_pub" ]] && { log_info "A public key is required for a mobile device."; continue; }
+            [[ -f "$cert_gen_pub" ]] || { log_error "File not found: $cert_gen_pub"; cert_gen_pub=""; }
+        done
+    fi
+
     local suggested_ip; suggested_ip="$(suggest_next_cert_ip "$cert_dir")"
     while true; do
         local ip_prompt="Enter the IP address (e.g., 192.168.222.16/24): "
         [[ -n "$suggested_ip" ]] && ip_prompt="Enter the IP address [${suggested_ip}]: "
-        read -p "$(show_status 'question') $ip_prompt" cert_gen_ip
+        read -p "$(show_status 'question') $ip_prompt" cert_gen_ip || { log_info "Canceled."; return 1; }
         [[ -z "$cert_gen_ip" && -n "$suggested_ip" ]] && cert_gen_ip="$suggested_ip"
         if [[ "$cert_gen_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}(/([0-9]|[1-2][0-9]|3[0-2]))?$ ]]; then
             [[ "$cert_gen_ip" =~ / ]] || cert_gen_ip="${cert_gen_ip}/24"
@@ -505,19 +540,28 @@ generate_nebula_cert() {
             log_error "Invalid IP address. Please enter a valid IP (e.g., 192.168.222.16/24)."
         fi
     done
-    read -p "$(show_status 'question') Enter the groups (optional, e.g., servers,desktops): " cert_gen_groups
+    local groups_hint="servers,desktops"
+    (( cert_is_mobile )) && groups_hint="mobile"
+    read -p "$(show_status 'question') Enter the groups (optional, e.g., ${groups_hint}): " cert_gen_groups
     read -p "$(show_status 'question') Do you want to include subnets for this certificate? (y/n): " include_subnets_choice
     if [[ "$include_subnets_choice" == "y" ]]; then
         read -p "$(show_status 'question') Enter the subnets in CIDR format (comma-separated, e.g., 192.168.1.0/24,10.0.0.0/16): " cert_gen_subnets
     fi
     while true; do
-        read -p "$(show_status 'question') Set certificate duration in hours (press Enter to skip and inherit CA expiration): " cert_gen_duration
+        read -p "$(show_status 'question') Set certificate duration in hours (press Enter to skip and inherit CA expiration): " cert_gen_duration \
+            || break
         [[ -z "$cert_gen_duration" ]] && break
         [[ "$cert_gen_duration" =~ ^[0-9]+$ ]] && break
         log_error "Please enter a whole number of hours (e.g., 720), or press Enter to skip."
     done
+    if (( cert_is_mobile )); then
+        local qr_default="$cert_dir/$cert_gen_name.png"
+        read -p "$(show_status 'question') QR code output path [${qr_default}]: " cert_gen_qr
+        [[ -z "$cert_gen_qr" ]] && cert_gen_qr="$qr_default"
+    fi
     CERT_DIR="$cert_dir" SIGN_NAME="$cert_gen_name" SIGN_IP="$cert_gen_ip" \
         SIGN_GROUPS="$cert_gen_groups" SIGN_SUBNETS="$cert_gen_subnets" SIGN_DURATION_H="$cert_gen_duration" \
+        SIGN_IN_PUB="$cert_gen_pub" SIGN_QR="$cert_gen_qr" \
         pki_sign
 }
 
@@ -955,7 +999,7 @@ pki_ca_cli() {
 }
 
 pki_sign_cli() {
-    local name="" ip="" groups="" subnets="" duration="" cert_dir=""
+    local name="" ip="" groups="" subnets="" duration="" cert_dir="" in_pub="" qr=""
     while (($#)); do
         case "$1" in
             --name|-n) shift; name="$1" ;;
@@ -964,6 +1008,8 @@ pki_sign_cli() {
             --subnets|-s) shift; subnets="$1" ;;
             --duration|-d) shift; duration="$1" ;;
             --cert-dir) shift; cert_dir="$1" ;;
+            --in-pub) shift; in_pub="$1" ;;
+            --qr|--out-qr) shift; qr="$1" ;;
             --) shift; break ;;
             *)
                 if [[ -z "$name" ]]; then name="$1"
@@ -988,13 +1034,18 @@ pki_sign_cli() {
     fi
 
     if [[ -z "$name" || -z "$ip" ]]; then
-        echo "Usage: nebula-manager sign [--name NAME] [--ip CIDR] [--groups a,b] [--subnets CIDR] [--duration HOURS] [--cert-dir DIR]" >&2
+        echo "Usage: nebula-manager sign [--name NAME] [--ip CIDR] [--in-pub KEY.pub] [--qr OUT.png] [--groups a,b] [--subnets CIDR] [--duration HOURS] [--cert-dir DIR]" >&2
         log_error "Could not derive a certificate name/IP automatically; pass --name and/or --ip."
+        return 2
+    fi
+    if [[ -n "$in_pub" && ! -f "$in_pub" ]]; then
+        log_error "Device public key not found: $in_pub"
         return 2
     fi
     # strip a trailing 'h' from duration if the user supplied one
     duration="${duration%h}"
     CERT_DIR="$cert_dir" SIGN_NAME="$name" SIGN_IP="$ip" \
         SIGN_GROUPS="$groups" SIGN_SUBNETS="$subnets" SIGN_DURATION_H="$duration" \
+        SIGN_IN_PUB="$in_pub" SIGN_QR="$qr" \
         pki_sign
 }
