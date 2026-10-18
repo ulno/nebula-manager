@@ -928,21 +928,144 @@ tun:
 EOF
 }
 
+# Default place to write exported client bundles. In order of preference:
+#   $NEBULA_BUNDLE_DIR -> the directory nebula-manager was started in ->
+#   ~/Downloads -> ~/tmp -> $HOME -> $TMPDIR
+# Only user-writable locations are chosen; nothing is created here.
+pki_default_bundle_dir() {
+    local d
+    if [[ -n "${NEBULA_BUNDLE_DIR:-}" ]]; then
+        d="${NEBULA_BUNDLE_DIR/#\~/$HOME}"
+        debug_info "bundle-dir: NEBULA_BUNDLE_DIR -> $d"
+        printf '%s\n' "$d"; return 0
+    fi
+    if [[ -n "${PWD:-}" && -d "$PWD" && -w "$PWD" ]]; then
+        debug_info "bundle-dir: current directory -> $PWD"
+        printf '%s\n' "$PWD"; return 0
+    fi
+    for d in "${HOME:-}/Downloads" "${HOME:-}/tmp" "${HOME:-}"; do
+        if [[ -n "$d" && -d "$d" && -w "$d" ]]; then
+            debug_info "bundle-dir: user directory -> $d"
+            printf '%s\n' "$d"; return 0
+        fi
+    done
+    d="${TMPDIR:-/tmp}"
+    debug_info "bundle-dir: temporary fallback -> $d"
+    printf '%s\n' "$d"
+}
+
+# pki_bundle_candidates [cert_dir]
+# Prints "<name>\t<ips>\t<groups>" for every certificate that can actually be
+# exported: a matching <name>.crt and <name>.key, not a CA and not revoked.
+# Mobile certificates signed with --in-pub have no local key and are skipped.
+pki_bundle_candidates() {
+    local dir="${1:-$(resolve_cert_dir)}"
+    local nc cert base key json isca ips groups
+    [[ -d "$dir" ]] || return 0
+    nc="${NEBULA_BIN_PATH:-/usr/local/bin}/nebula-cert"
+    [[ -x "$nc" ]] || nc="$(command -v nebula-cert 2>/dev/null || true)"
+
+    for cert in "$dir"/*.crt; do
+        [[ -f "$cert" ]] || continue
+        base="$(basename "$cert" .crt)"
+        [[ "$base" == "ca" ]] && continue
+        key="$dir/$base.key"
+        [[ -f "$key" ]] || continue
+        ips="" groups=""
+        if [[ -n "$nc" && -x "$nc" ]]; then
+            json="$(nebula_cert_json "$(dirname "$nc")" "$cert")"
+            isca="$(jq -r '.details.isCa // false' <<<"$json" 2>/dev/null)"
+            [[ "$isca" == "true" ]] && continue
+            ips="$(jq -r '.details.ips // [] | join(",")' <<<"$json" 2>/dev/null)"
+            groups="$(jq -r '.details.groups // [] | join(",")' <<<"$json" 2>/dev/null)"
+        fi
+        printf '%s\t%s\t%s\n' "$base" "$ips" "$groups"
+    done | sort
+}
+
+# Human-readable list of exportable certificates (stdout).
+pki_bundle_list() {
+    local dir="${1:-$(resolve_cert_dir)}"
+    local name ips groups found=0
+    while IFS=$'\t' read -r name ips groups; do
+        [[ -n "$name" ]] || continue
+        found=1
+        printf '  - %s' "$name"
+        [[ -n "$ips" ]] && printf '  (%s)' "$ips"
+        [[ -n "$groups" ]] && printf '  [%s]' "$groups"
+        printf '\n'
+    done < <(pki_bundle_candidates "$dir")
+    (( found )) || printf '  (none - a bundle needs both <name>.crt and <name>.key)\n'
+}
+
+# pki_resolve_bundle_name <query> [cert_dir]
+# Finds an exportable certificate by exact name, case-insensitive name, or a
+# unique substring (also accepts a pasted path like .../host1.crt).
+# On success sets PKI_BUNDLE_RESOLVED. On ambiguity sets PKI_BUNDLE_MATCHES and
+# returns 2; returns 1 when nothing matches.
+PKI_BUNDLE_RESOLVED=""
+PKI_BUNDLE_MATCHES=()
+pki_resolve_bundle_name() {
+    local query="${1:-}" dir="${2:-$(resolve_cert_dir)}"
+    PKI_BUNDLE_RESOLVED=""; PKI_BUNDLE_MATCHES=()
+    [[ -n "$query" ]] || return 1
+    query="${query##*/}"
+    query="${query%.crt}"; query="${query%.key}"
+
+    local name _ips _groups
+    local -a all=() exact=() folded=() hits=()
+    while IFS=$'\t' read -r name _ips _groups; do
+        [[ -n "$name" ]] && all+=("$name")
+    done < <(pki_bundle_candidates "$dir")
+    (( ${#all[@]} )) || return 1
+
+    for name in "${all[@]}"; do
+        [[ "$name" == "$query" ]] && exact+=("$name")
+    done
+    if (( ${#exact[@]} == 1 )); then
+        PKI_BUNDLE_RESOLVED="${exact[0]}"; return 0
+    fi
+
+    local qfold="${query,,}"
+    for name in "${all[@]}"; do
+        [[ "${name,,}" == "$qfold" ]] && folded+=("$name")
+    done
+    if (( ${#folded[@]} == 1 )); then
+        PKI_BUNDLE_RESOLVED="${folded[0]}"; return 0
+    fi
+
+    for name in "${all[@]}"; do
+        [[ "${name,,}" == *"$qfold"* ]] && hits+=("$name")
+    done
+    if (( ${#hits[@]} == 1 )); then
+        PKI_BUNDLE_RESOLVED="${hits[0]}"; return 0
+    fi
+    if (( ${#hits[@]} > 1 )); then
+        PKI_BUNDLE_MATCHES=("${hits[@]}"); return 2
+    fi
+    return 1
+}
+
 # pki_bundle_client_zip <name> [out_dir] [cert_dir]
 # Produces <name>-nebula-bundle.zip containing cert, key, ca.crt and a
-# config template. Runs entirely unprivileged.
+# config template. Runs entirely unprivileged; the archive is mode 0600 because
+# it contains the client's private key.
 pki_bundle_client_zip() {
     local name="${1:?client name required}"
-    local out_dir="${2:-$PWD}"
+    local out_dir="${2:-$(pki_default_bundle_dir)}"
     local cert_dir="${3:-$(resolve_cert_dir)}"
     local crt="$cert_dir/$name.crt" key="$cert_dir/$name.key"
     local ca; ca="$(find_ca_crt "$cert_dir" || true)"
 
+    out_dir="${out_dir/#\~/$HOME}"
     [[ -f "$crt" ]] || { log_error "Certificate not found: $crt"; return 1; }
     [[ -f "$key" ]] || { log_error "Key not found: $key"; return 1; }
     [[ -n "$ca" && -f "$ca" ]] || { log_error "CA certificate not found for $name"; return 1; }
 
     ensure_dir "$out_dir" || return 1
+    if [[ "$out_dir" == "$cert_dir" ]]; then
+        log_warn "Writing the bundle into the certificate store itself - consider another directory."
+    fi
     local tmp; tmp="$(mktemp -d)"
     cp "$crt" "$tmp/$name.crt"
     cp "$key" "$tmp/$name.key"
@@ -954,10 +1077,12 @@ pki_bundle_client_zip() {
     if command -v zip >/dev/null 2>&1; then
         ( cd "$tmp" && zip -q "$zipfile" "$name.crt" "$name.key" ca.crt config.yml.template ) \
             || { log_error "Failed to create zip bundle."; rm -rf "$tmp"; return 1; }
+        chmod 600 "$zipfile" 2>/dev/null || true
     else
         local tarball="$out_dir/${name}-nebula-bundle.tar.gz"
         ( cd "$tmp" && tar -czf "$tarball" "$name.crt" "$name.key" ca.crt config.yml.template ) \
             || { log_error "Failed to create tar bundle."; rm -rf "$tmp"; return 1; }
+        chmod 600 "$tarball" 2>/dev/null || true
         rm -rf "$tmp"
         log_warn "zip not found; wrote $tarball instead."
         printf '%s\n' "$tarball"
@@ -965,6 +1090,7 @@ pki_bundle_client_zip() {
     fi
     rm -rf "$tmp"
     log_success "Client bundle created: $zipfile"
+    log_info "Contains: ${name}.crt, ${name}.key, ca.crt, config.yml.template (keep it safe - it holds the private key)."
     printf '%s\n' "$zipfile"
 }
 
@@ -981,7 +1107,7 @@ manage_nebula_certs() {
         "$(get_icon 'create')Generate Client Certificate"
         "$(get_icon 'inspect')View Certificate and Key Details"
         "$(get_icon 'hour-glass')Certificate Expiry"
-        "$(get_icon 'upload')Bundle Client Zip"
+        "$(get_icon 'upload')Bundle / Export Client Certificate"
         "$(get_icon 'revoke')Revoke Certificate"
         "$(get_icon 'keys')Switch Certificate Workspace"
         "$(get_icon 'error')Remove Certificate"
@@ -1000,13 +1126,48 @@ manage_nebula_certs() {
     dynamic_menu dynamic_menu_title dynamic_menu_options dynamic_menu_functions 1
 }
 
+# Interactive bundle/export: pick from the existing certificates (rather than
+# typing a name from memory), then choose the destination directory.
 pki_bundle_client_menu() {
-    local name out default_out
-    read -p "$(show_status 'question') Client certificate name to bundle: " name
-    [[ -z "$name" ]] && return
-    default_out="$PWD"
-    out="$(ui_input "Bundle Client" "Output directory:" "$default_out")" || return
-    pki_bundle_client_zip "$name" "${out:-$default_out}"
+    local cert_dir; cert_dir="$(resolve_cert_dir)"
+    local name ips groups desc
+    local -a pairs=()
+    while IFS=$'\t' read -r name ips groups; do
+        [[ -n "$name" ]] || continue
+        desc="$name"
+        [[ -n "$ips" ]] && desc+="  ($ips)"
+        [[ -n "$groups" ]] && desc+="  [$groups]"
+        pairs+=( "$name" "$desc" )
+    done < <(pki_bundle_candidates "$cert_dir")
+
+    if (( ${#pairs[@]} == 0 )); then
+        log_warn "No exportable certificates found in $cert_dir (a bundle needs <name>.crt and <name>.key; mobile certs have no local key)."
+        log_info "Create one first: Certificates > Generate Client Certificate."
+        return 1
+    fi
+    pairs+=( "__custom__" "Type a certificate name manually..." )
+
+    local choice
+    choice="$(ui_menu "Bundle / Export Client" "Select the certificate to export:" "${pairs[@]}")" || return 0
+    if [[ "$choice" == "__custom__" ]]; then
+        read -p "$(show_status 'question') Certificate name (or path): " choice
+        [[ -z "$choice" ]] && return 0
+    fi
+
+    pki_resolve_bundle_name "$choice" "$cert_dir"
+    case $? in
+        0) name="$PKI_BUNDLE_RESOLVED" ;;
+        2) log_error "Ambiguous certificate name '$choice'. Matches: ${PKI_BUNDLE_MATCHES[*]}"; return 1 ;;
+        *) log_error "No exportable certificate matching '$choice' in $cert_dir."; return 1 ;;
+    esac
+    [[ "$name" != "$choice" ]] && log_info "Matched '$choice' -> '$name'"
+
+    local default_out out
+    default_out="$(pki_default_bundle_dir)"
+    out="$(ui_dselect "Bundle / Export Client" "Output directory [${default_out}]:" "$default_out")" || return 0
+    out="${out/#\~/$HOME}"
+    [[ -z "$out" ]] && out="$default_out"
+    pki_bundle_client_zip "$name" "$out" "$cert_dir"
 }
 
 # --- Headless CLI --------------------------------------------------
@@ -1017,9 +1178,54 @@ pki_cli() {
         list)   list_certs ;;
         expiry) list_certs_expiry "${1:-}" ;;
         remove|rm) pki_remove "${1:?certificate name required}" ;;
-        bundle)
-            local name="${1:?client name required}"; shift || true
-            pki_bundle_client_zip "$name" "${1:-$PWD}"
+        bundle|export|zip)
+            local name="" out=""
+            while (($#)); do
+                case "$1" in
+                    --out=*) out="${1#*=}" ;;
+                    --out|-o)
+                        shift
+                        [[ $# -gt 0 && -n "$1" ]] || { log_error "'cert bundle --out' requires a directory"; return 2; }
+                        out="$1"
+                        ;;
+                    -h|--help)
+                        echo "Usage: nebula-manager cert bundle <name|match> [--out DIR] [--cert-dir DIR]" >&2
+                        echo "       omitting <name> lists the certificates that can be exported" >&2
+                        return 0 ;;
+                    -*) log_error "Unknown option for 'cert bundle': $1"; return 2 ;;
+                    *)
+                        if [[ -z "$name" ]]; then
+                            name="$1"
+                        elif [[ -z "$out" ]]; then
+                            out="$1"   # backwards-compatible positional output dir
+                        else
+                            log_error "Unexpected argument for 'cert bundle': $1"; return 2
+                        fi
+                        ;;
+                esac
+                shift
+            done
+            local cert_dir; cert_dir="$(resolve_cert_dir)"
+            if [[ -z "$name" ]]; then
+                log_error "cert bundle: certificate name required."
+                echo "Exportable certificates in $cert_dir:" >&2
+                pki_bundle_list "$cert_dir" >&2
+                echo "Usage: nebula-manager cert bundle <name|match> [--out DIR] [--cert-dir DIR]" >&2
+                return 2
+            fi
+            pki_resolve_bundle_name "$name" "$cert_dir"
+            case $? in
+                0) [[ "$PKI_BUNDLE_RESOLVED" != "$name" ]] && log_info "Matched '$name' -> '$PKI_BUNDLE_RESOLVED'"; name="$PKI_BUNDLE_RESOLVED" ;;
+                2) log_error "Ambiguous certificate name '$name'. Matches: ${PKI_BUNDLE_MATCHES[*]}"; return 2 ;;
+                *)
+                    log_error "No exportable certificate matching '$name' in $cert_dir."
+                    echo "Exportable certificates:" >&2
+                    pki_bundle_list "$cert_dir" >&2
+                    return 1
+                    ;;
+            esac
+            out="${out/#\~/$HOME}"
+            pki_bundle_client_zip "$name" "${out:-$(pki_default_bundle_dir)}" "$cert_dir"
             ;;
         workspace)
             select_cert_workspace ;;

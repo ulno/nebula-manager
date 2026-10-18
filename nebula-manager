@@ -324,7 +324,11 @@ Commands:
   sign [--name N] [--ip CIDR] [--in-pub KEY.pub] [--qr OUT.png] [...]
                                   Sign a client cert (name/IP auto-suggested;
                                   --in-pub for mobile: the key stays on the device)
-  cert list|expiry|remove|bundle  Certificate operations
+  cert list|expiry|remove          Certificate operations
+  cert bundle|export [NAME] [--out DIR]
+                                  Export a client zip (NAME may be a unique
+                                  substring; omit it to list candidates).
+                                  Default output: current dir, else ~/Downloads
   bench server|client [...]       iperf3 benchmarks
   diag                            Diagnostics (TUN IP, UDP socket, cert expiry)
   config path|init|refresh|edit|remove   Manage nebula-manager.conf (offline template)
@@ -336,6 +340,7 @@ Commands:
 
 Environment:
   NEBULA_KEYS_DIR      Certificate workspace (2nd precedence, after --cert-dir)
+  NEBULA_BUNDLE_DIR    Default directory for exported client bundles
   NEBULA_MANAGER_LIB   Override the lib/ directory location
   NEBULA_MANAGER_CONF  Path to nebula-manager.conf (alias for --config)
   NEBULA_MANAGER_REPO  owner/repo to use for update checks (default: git origin)

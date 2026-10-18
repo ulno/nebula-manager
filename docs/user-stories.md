@@ -33,7 +33,7 @@ Start the tool and everything is selectable from the text-graphical menus:
 |---|---|
 | **Setup** | shows the detected state, then Import/Update / Create / Browse / Edit / Delete config, Manage servers, Certificate Workspace |
 | **Servers** | List / Add / Enable-Disable / Remove `[server.*]` |
-| **Certificates** | List / Create CA / Sign / View / Expiry / **Bundle client zip** / Revoke / Switch workspace |
+| **Certificates** | List / Create CA / Sign / View / Expiry / **Bundle-export client zip** (pick from a list) / Revoke / Switch workspace |
 | **Configuration** | Validate / Edit Nebula `config.yml` / Firewall |
 | **Connectivity** | ping all cert IPs (+ optional `iperf3`) |
 | **Diagnostics** | TUN ip, UDP socket, cert expiry |
@@ -173,8 +173,8 @@ $ nebula-manager sign --cert-dir ~/keys/nebula \
 $ nebula-manager sign --cert-dir ~/keys/nebula \
       --name theprof4.theprof.mesh --ip 10.100.0.5/24 --groups laptops
 
-$ nebula-manager cert bundle theprof3.theprof.mesh ./bundles
-$ nebula-manager cert bundle theprof4.theprof.mesh ./bundles
+$ nebula-manager cert bundle theprof3.theprof.mesh --out ./bundles
+$ nebula-manager cert bundle theprof4.theprof.mesh --out ./bundles
 ```
 
 Each bundle (`./bundles/theprof3.theprof.mesh-nebula-bundle.zip`) contains the cert, key,

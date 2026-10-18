@@ -22,7 +22,7 @@
 
 - 🔓 **Least-privilege by default** – runs as your user; granular `sudo` on demand.
 - 🚀 **Install & Update Nebula** from official releases (arch/OS aware).
-- 🛡 **Certificate management** – list, generate, view, bundle, check expiry, and **revoke with reasons**.
+- 🛡 **Certificate management** – list, generate, view, bundle/export (with list + name matching), check expiry, and **revoke with reasons**.
 - 🗝️ **Configurable certificate workspaces** – keep PKI in a user-owned store, switch at runtime, auto-detect existing stores.
 - 📝 **Configuration management** – interactively edit `config.yml` with validation to prevent bad deploys.
 - 🔥 **Firewall management** – control inbound/outbound rules, defaults, and conntrack settings.
@@ -212,6 +212,30 @@ The app also needs the **CA certificate** (paste `ca.crt`, or scan a QR made wit
 `qrencode`), plus the lighthouse's overlay IP and public `host:port`. See
 `docs/user-stories.md` (Story 1, Phase 2b / Story 2, Dana) for the full flow.
 
+### Exporting a client bundle
+
+**Certificates ▸ Bundle / Export Client Certificate** lists every certificate
+that can actually be exported (a matching `.crt` and `.key`), showing its
+overlay IP and groups. CAs and mobile certs signed with `--in-pub` are skipped
+because there is no local private key to ship. Pick one, then confirm the output
+directory in a browser/prompt.
+
+Headless usage accepts a **unique substring** (case-insensitive) instead of the
+exact name, and lists candidates when the name is omitted or ambiguous:
+
+```bash
+./nebula-manager cert bundle                    # list exportable certificates
+./nebula-manager cert bundle host1              # exact or unique substring
+./nebula-manager cert bundle host1 --out ~/Downloads
+./nebula-manager cert bundle host1 ./bundles    # positional dir still works
+export NEBULA_BUNDLE_DIR=~/exports              # default destination
+```
+
+Destination precedence: `--out` → `NEBULA_BUNDLE_DIR` → the directory
+nebula-manager was started in → `~/Downloads` → `~/tmp` → `$TMPDIR`. The zip
+contains the cert, key, `ca.crt` and a `config.yml.template`, and is written
+mode **0600** because it holds the private key.
+
 ### Resolution precedence
 
 1. `--cert-dir <path>` (CLI flag — highest priority)
@@ -267,7 +291,7 @@ headless subcommands for scripting — see *Expert / scriptable* below.
 |---|---|
 | **Setup** | shows the **detected state** (config, Nebula service, cert workspace), then: import/update, create, browse, edit, delete `nebula-manager.conf`, manage servers, pick the certificate workspace |
 | **Servers** | list / add / enable-disable / remove `[server.*]` entries |
-| **Certificates** | list, create CA, sign, view, expiry, **bundle zip**, revoke, switch workspace |
+| **Certificates** | list, create CA, sign, view, expiry, **bundle/export** (pick from a list), revoke, switch workspace |
 | **Configuration** | validate / edit Nebula `config.yml`, edit firewall rules |
 | **Connectivity** | ping every cert IP; optional `iperf3` test |
 | **Diagnostics** | TUN IP, listening UDP socket, certificate expiry; reads a service-owned config once with temporary sudo and caches the header values |
@@ -308,7 +332,9 @@ file/directory browsing automatically uses `whiptail` when it is installed.
 #   ^ mobile: sign the device-generated public key; no .key written, QR for the app
 ./nebula-manager cert list
 ./nebula-manager cert expiry 30         # certs expiring within 30 days
-./nebula-manager cert bundle host1 ./bundles
+./nebula-manager cert bundle             # list certificates that can be exported
+./nebula-manager cert bundle host1       # exact or unique substring; writes to cwd
+./nebula-manager cert bundle host1 --out ~/Downloads
 
 # Benchmarks & diagnostics   (TUI: Benchmarks, Diagnostics)
 ./nebula-manager bench server --port 5201
@@ -337,6 +363,7 @@ file/directory browsing automatically uses `whiptail` when it is installed.
 | Variable | Purpose |
 |---|---|
 | `NEBULA_KEYS_DIR` | Certificate workspace (2nd precedence, after `--cert-dir`) |
+| `NEBULA_BUNDLE_DIR` | Default directory for exported client bundles (default: start dir, then `~/Downloads`, `~/tmp`) |
 | `NEBULA_MANAGER_LIB` | Override the `lib/` module directory |
 | `NEBULA_MANAGER_CONF` | Path to `nebula-manager.conf` (alias for `--config`) |
 | `NEBULA_MANAGER_REPO` | `owner/repo` used for update checks / templates (default: git `origin`) |
@@ -557,6 +584,7 @@ What it covers:
 | `tests/test_realstore_readonly.sh` | uses a real cert store **read-only** (hashes unchanged, no `sudo`) |
 | `tests/test_cli.sh` | CLI parsing, flag precedence, usage/exit codes, end-to-end unprivileged PKI |
 | `tests/test_debug.sh` | `DEBUG` levels: `learn` prints Nebula CLI commands to stderr only, `warn` hides info, stdout stays clean |
+| `tests/test_bundle.sh` | client export: candidate listing, substring/ambiguous matching, default output dir, TUI picker, mode 0600 |
 | `tests/pki.bats` | BATS mirror of the core unprivileged-PKI guarantees |
 
 Requirements: `bash`, `nebula-cert` (for PKI tests; auto-skipped otherwise).
