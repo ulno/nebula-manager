@@ -91,6 +91,14 @@ assert_eq "client DNS persist succeeds" "$rc" "0"
 assert_contains "persist installs the resolver unit" "$(cat "$SUDO_LOG")" "nebula-manager-resolved.service"
 assert_contains "persist enables the resolver unit" "$(cat "$SUDO_LOG")" "systemctl enable --now"
 
+# --- the interactive action menu actually reaches the action -----------------
+: > "$SUDO_LOG"
+out="$(printf '2\n' | NEBULA_DIR="$CLIENT" manage_name_resolution 2>&1)"; rc=$?
+assert_eq "name-resolution menu returns success" "$rc" "0"
+assert_contains "name-resolution menu reaches the action list" "$out" "Client DNS actions"
+assert_contains "name-resolution menu offers the boot hook" "$out" "install boot hook"
+assert_contains "menu option 2 applies and persists" "$(cat "$SUDO_LOG")" "systemctl enable --now"
+
 # --- lighthouse setup -------------------------------------------------------
 LH="$SANDBOX/lh"
 mkdir -p "$LH"
@@ -121,6 +129,11 @@ assert_contains "DNS port set to 53" "$cfg" "port: 53"
 assert_contains "firewall allows UDP" "$cfg" "proto: udp"
 assert_contains "lighthouse setup reports success" "$out" "Lighthouse DNS enabled"
 assert_eq "user-owned lighthouse config used no sudo" "$(sudo_count)" "0"
+
+out="$(printf '1\n' | NEBULA_DIR="$LH" manage_name_resolution 2>&1)"; rc=$?
+assert_eq "lighthouse DNS menu returns success" "$rc" "0"
+assert_contains "lighthouse menu reaches the action list" "$out" "Lighthouse DNS actions"
+assert_contains "lighthouse menu offers serve_dns" "$out" "Enable serve_dns"
 
 out="$(NEBULA_DIR="$LH" dns_status 2>&1)"
 assert_contains "status reports serve_dns" "$out" "serve_dns:    enabled"

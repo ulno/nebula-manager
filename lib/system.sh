@@ -2412,6 +2412,7 @@ dns_status() {
         printf 'resolvectl:   not installed\n'
     fi
     [[ -n "$tmp" ]] && rm -f "$tmp"
+    return 0
 }
 
 _dns_offer_restart() {
@@ -2564,7 +2565,7 @@ manage_name_resolution() {
     if [[ "$role" == lighthouse ]]; then
         choice="$(ui_menu "Name resolution" "Lighthouse DNS actions" \
             "enable" "Enable serve_dns + firewall UDP/53" \
-            "back" "Back") " || return 0
+            "back" "Back")" || return 0
         case "$choice" in
             enable) configure_lighthouse_dns ;;
         esac
@@ -2572,7 +2573,7 @@ manage_name_resolution() {
         choice="$(ui_menu "Name resolution" "Client DNS actions" \
             "apply" "Apply now (until reboot)" \
             "persist" "Apply now + install boot hook (recommended)" \
-            "back" "Back") " || return 0
+            "back" "Back")" || return 0
         case "$choice" in
             apply)   configure_client_dns ;;
             persist) configure_client_dns --persist ;;
