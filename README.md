@@ -713,3 +713,8 @@ Pull requests are welcome. For major changes, open an issue first to discuss wha
 ## 🧠 Author
 
 Created by [Jordan Hillis](https://github.com/jordanhillis). Contributions welcome!
+
+**Academic improvements by ulno** — the least-privilege (non-root) refactor, the
+modular `lib/` layout, the `import` wizard, server management, the plain-first
+TUI, mobile certificate support and the per-distribution manuals — were developed
+for teaching Nebula in a networking class.
