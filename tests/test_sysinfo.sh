@@ -41,12 +41,16 @@ assert_contains "shows the tun interface"   "$out" "nebula1"
 assert_contains "resolves the listen port"  "$out" "0.0.0.0:"
 assert_not_contains "no awk permission error" "$out" "Permission denied"
 assert_contains "reports client state"      "$out" "Client"
+assert_contains "flags missing static_host_map" "$out" "missing static_host_map"
+assert_contains "flags missing lighthouse.hosts" "$out" "lighthouse.hosts"
 
 # --- a successful read populates the user-owned header cache ---
 cache="$(nebula_info_cache_file)"
 assert_file "info cache written" "$cache"
 assert_contains "cache records the tun device" "$(cat "$cache")" "tun=nebula1"
 assert_contains "cache is keyed to its source config" "$(cat "$cache")" "config=$NEBULA_DIR/config.yml"
+assert_contains "cache records lighthouse health" "$(cat "$cache")" "lh_hosts=0"
+assert_contains "cache records static-map health" "$(cat "$cache")" "static_hosts=0"
 
 # a cache from a different config path is never treated as fresh (multi-server)
 cp "$cache" "$cache.orig"
@@ -84,6 +88,9 @@ out="$(show_system_info 2>&1)"
 assert_contains "guesses the interface without the config" "$out" "nebula1"
 assert_contains "shows the overlay address" "$out" "10.100.0.2"
 assert_contains "points at Diagnostics for the port" "$out" "see Diagnostics"
+assert_contains "flags the unverified config" "$out" "not readable - lighthouse/static_host_map not verified"
+assert_contains "points at Validate Config" "$out" "Validate Config"
+assert_not_contains "unverified note never says run with sudo" "$out" "run with sudo"
 unset -f ip
 chmod 644 "$NEBULA_DIR/config.yml"
 

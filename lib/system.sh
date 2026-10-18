@@ -273,6 +273,7 @@ check_nebula_config() {
     local r; r="$(readable_nebula_config "$config_file")" || r=""
     if [[ -z "$r" ]]; then
         log_error "Cannot read Nebula config at $config_file (permission denied)."
+        log_info "Approve the temporary sudo read when prompted, or point NEBULA_LOCAL_CONFIG at a readable copy."
         return 1
     fi
     local cfg="$r" tmp=""
@@ -768,7 +769,9 @@ read_nebula_config() {
     fi
     # Unreadable and no cached credentials: ask before prompting for a password
     # (skipped when NEBULA_NO_PROMPT=1, e.g. during menu-state detection).
-    if [[ "${NEBULA_NO_PROMPT:-0}" != 1 && -t 0 && -t 1 ]] && command -v sudo >/dev/null 2>&1; then
+    # Check stderr, not stdout: readable_nebula_config redirects stdout to a
+    # capture file, which used to make this prompt impossible to reach.
+    if [[ "${NEBULA_NO_PROMPT:-0}" != 1 && -t 0 && -t 2 ]] && command -v sudo >/dev/null 2>&1; then
         local a
         read -rp "$(show_status 'question') ${config_file} is service-owned and not readable. Read it once with temporary sudo? [y/N]: " a
         [[ "$a" =~ ^[Yy] ]] && { elevate_why "read the Nebula service config $config_file" cat "$config_file" && return 0; }
@@ -802,8 +805,10 @@ nebula_info_cache_file() {
 }
 
 # _nebula_info_save <source_config> <tun> <bind_host> <bind_port> <is_lh>
+#                   [lh_hosts] [static_hosts]
 _nebula_info_save() {
     local cfg="$1" tun="$2" host="$3" port="$4" is_lh="$5"
+    local lh_hosts="${6:-}" static_hosts="${7:-}"
     local f; f="$(nebula_info_cache_file)"
     mkdir -p "$(dirname "$f")" 2>/dev/null || return 0
     {
@@ -812,6 +817,8 @@ _nebula_info_save() {
         printf 'bind_host=%s\n' "$host"
         printf 'bind_port=%s\n' "$port"
         printf 'is_lh=%s\n'     "$is_lh"
+        [[ -n "$lh_hosts" ]] && printf 'lh_hosts=%s\n' "$lh_hosts"
+        [[ -n "$static_hosts" ]] && printf 'static_hosts=%s\n' "$static_hosts"
     } > "$f" 2>/dev/null || return 0
 }
 
@@ -821,14 +828,17 @@ _nebula_info_load() {
     [[ -f "$f" ]] || return 1
     NEBULA_INFO_CONFIG="" NEBULA_INFO_TUN="" NEBULA_INFO_BIND_HOST=""
     NEBULA_INFO_BIND_PORT="" NEBULA_INFO_IS_LH=""
+    NEBULA_INFO_LH_HOSTS="" NEBULA_INFO_STATIC_HOSTS=""
     local k v
     while IFS='=' read -r k v; do
         case "$k" in
-            config)    NEBULA_INFO_CONFIG="$v" ;;
-            tun)       NEBULA_INFO_TUN="$v" ;;
-            bind_host) NEBULA_INFO_BIND_HOST="$v" ;;
-            bind_port) NEBULA_INFO_BIND_PORT="$v" ;;
-            is_lh)     NEBULA_INFO_IS_LH="$v" ;;
+            config)       NEBULA_INFO_CONFIG="$v" ;;
+            tun)          NEBULA_INFO_TUN="$v" ;;
+            bind_host)    NEBULA_INFO_BIND_HOST="$v" ;;
+            bind_port)    NEBULA_INFO_BIND_PORT="$v" ;;
+            is_lh)        NEBULA_INFO_IS_LH="$v" ;;
+            lh_hosts)     NEBULA_INFO_LH_HOSTS="$v" ;;
+            static_hosts) NEBULA_INFO_STATIC_HOSTS="$v" ;;
         esac
     done < "$f" 2>/dev/null
     [[ -n "$NEBULA_INFO_TUN" || -n "$NEBULA_INFO_BIND_PORT" || -n "$NEBULA_INFO_IS_LH" ]]
@@ -848,10 +858,76 @@ _nebula_info_fresh() {
     (( mtm >= ctm ))
 }
 
+# Count entries in lighthouse.hosts (inline or list form).
+_nebula_count_lh_hosts() {
+    awk '
+        { sub(/\r$/, "") }
+        /^[[:space:]]*#/ { next }
+        /^[^[:space:]]/ { inlh = ($0 ~ /^lighthouse:[[:space:]]*$/); inhosts=0; next }
+        !inlh { next }
+        /^[[:space:]]*hosts:[[:space:]]*\[/ {
+            line=$0; sub(/.*\[/, "", line); sub(/\].*/, "", line)
+            n=split(line, a, ",")
+            for (i=1; i<=n; i++) {
+                v=a[i]; gsub(/"/, "", v); gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
+                sub(/[[:space:]]*#.*$/, "", v)
+                if (v != "") c++
+            }
+            inhosts=0; next
+        }
+        /^[[:space:]]*hosts:[[:space:]]*$/ { inhosts=1; next }
+        /^[[:space:]]*[A-Za-z_]+[[:space:]]*:/ { inhosts=0 }
+        inhosts && /^[[:space:]]*-[[:space:]]*/ {
+            v=$0; sub(/^[[:space:]]*-[[:space:]]*/, "", v); gsub(/"/, "", v)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", v); sub(/[[:space:]]*#.*$/, "", v)
+            if (v != "") c++
+        }
+        END { print c+0 }' "$1" 2>/dev/null
+}
+
+# Count static_host_map keys (enough to tell whether an endpoint is configured).
+_nebula_count_static_hosts() {
+    awk '
+        { sub(/\r$/, "") }
+        /^[[:space:]]*#/ { next }
+        /^[^[:space:]]/ { insec = ($0 ~ /^static_host_map:[[:space:]]*$/); next }
+        !insec { next }
+        /^[[:space:]]*"?[0-9A-Fa-f:.]+"?[[:space:]]*:/ { c++ }
+        END { print c+0 }' "$1" 2>/dev/null
+}
+
+# Warn when a readable/cached client config is missing the settings needed to
+# reach a lighthouse. "Unknown" counts (old cache) are not guessed at.
+_nebula_warn_missing_network() {
+    local is_lh="$1" lh_hosts="$2" static_hosts="$3" cfg="$4"
+    [[ "$is_lh" == "true" ]] && return 0
+    [[ -z "$lh_hosts" && -z "$static_hosts" ]] && return 0
+    local -a miss=()
+    if [[ "$static_hosts" =~ ^[0-9]+$ ]] && (( static_hosts == 0 )); then miss+=("static_host_map"); fi
+    if [[ "$lh_hosts" =~ ^[0-9]+$ ]] && (( lh_hosts == 0 )); then miss+=("lighthouse.hosts"); fi
+    (( ${#miss[@]} )) || return 0
+    local joined; joined="$(printf '%s, ' "${miss[@]}")"; joined="${joined%, }"
+    echo -e "$(show_status 'warning') ${BOLD}${YELLOW}Config:${RESET} ${YELLOW}missing ${joined} in ${cfg}${RESET}"
+    echo -e "    ${GRAY}A client needs a lighthouse overlay IP and its public host:port; edit the config or use a client bundle.${RESET}"
+}
+
+# The config exists but could not be read (or is absent): say so at startup
+# instead of silently showing only a guessed interface.
+_nebula_unverified_config_note() {
+    local cfg="$1"
+    [[ -n "$cfg" && -n "${NEBULA_DIR:-}" ]] || return 0
+    if [[ -f "$cfg" ]]; then
+        echo -e "$(show_status 'warning') ${BOLD}${YELLOW}Config:${RESET} ${YELLOW}$cfg not readable - lighthouse/static_host_map not verified${RESET}"
+    else
+        echo -e "$(show_status 'warning') ${BOLD}${YELLOW}Config:${RESET} ${YELLOW}$cfg not found - lighthouse/static_host_map not configured${RESET}"
+    fi
+    echo -e "    ${GRAY}choose Diagnostics or Configuration > Validate Config to authorize a one-time read.${RESET}"
+}
+
 # _nebula_info_derive <readable_config> : parse the values, refresh the cache,
-# and print "tun|bind_host|bind_port|is_lh".
+# and print "tun|bind_host|bind_port|is_lh|lh_hosts|static_hosts".
 _nebula_info_derive() {
-    local cfg="$1" tun host port is_lh
+    local cfg="$1" tun host port is_lh lh_hosts static_hosts
     tun="$(iface_from_config "$cfg")"
     host="$(awk '/listen:/,/port:/{if($1~/^host:/){gsub(/\r|\n|"/,"",$2);print $2}}' "$cfg")"
     port="$(awk '/listen:/,/port:/{if($1~/^port:/){gsub(/\r|\n|"/,"",$2);print $2}}' "$cfg")"
@@ -862,8 +938,10 @@ _nebula_info_derive() {
         [[ -n "$_p" ]] && port="$_p"
     fi
     if grep -q '^ *am_lighthouse: true' "$cfg"; then is_lh="true"; else is_lh="false"; fi
-    _nebula_info_save "$cfg" "$tun" "$host" "$port" "$is_lh"
-    printf '%s|%s|%s|%s' "$tun" "$host" "$port" "$is_lh"
+    lh_hosts="$(_nebula_count_lh_hosts "$cfg")"
+    static_hosts="$(_nebula_count_static_hosts "$cfg")"
+    _nebula_info_save "$cfg" "$tun" "$host" "$port" "$is_lh" "$lh_hosts" "$static_hosts"
+    printf '%s|%s|%s|%s|%s|%s' "$tun" "$host" "$port" "$is_lh" "$lh_hosts" "$static_hosts"
 }
 
 # Guess the Nebula TUN interface/address from the system (no config needed).
@@ -888,22 +966,24 @@ show_system_info() {
     echo -e "$(show_status 'success') ${BOLD}${YELLOW}Service: ${RESET}$(print_service_status "$service_name")"
     echo -e "$(show_status 'success') ${BOLD}${YELLOW}Uptime:${RESET} $(date -ud@$(($(date +%s) - $(date -d"$(systemctl show "$service_name" --property=ActiveEnterTimestamp | cut -d'=' -f2)" +%s))) +%T | awk -F: '{print $1" hrs, "$2" min, "$3" sec"}')"
 
-    local tun="" host="" port="" is_lh="" src=""
+    local tun="" host="" port="" is_lh="" lh_hosts="" static_hosts="" src=""
 
     # 1) A readable config: use it live and refresh the cache.
     if [[ -n "${NEBULA_DIR:-}" && -f "$nebula_config" && -r "$nebula_config" ]]; then
         local derived; derived="$(_nebula_info_derive "$nebula_config")"
-        IFS='|' read -r tun host port is_lh <<< "$derived"
+        IFS='|' read -r tun host port is_lh lh_hosts static_hosts <<< "$derived"
         src="live"
     # 2) Otherwise a fresh cache avoids any privileged read (and any sudo prompt).
     elif _nebula_info_fresh "$nebula_config" && _nebula_info_load; then
         tun="$NEBULA_INFO_TUN"; host="$NEBULA_INFO_BIND_HOST"
         port="$NEBULA_INFO_BIND_PORT"; is_lh="$NEBULA_INFO_IS_LH"; src="cache"
+        lh_hosts="$NEBULA_INFO_LH_HOSTS"; static_hosts="$NEBULA_INFO_STATIC_HOSTS"
     # 3) A stale cache is still better than nothing, but only for the same config
     #    (multi-server safety: never show another server's values).
     elif _nebula_info_load && [[ "$NEBULA_INFO_CONFIG" == "$nebula_config" ]]; then
         tun="$NEBULA_INFO_TUN"; host="$NEBULA_INFO_BIND_HOST"
         port="$NEBULA_INFO_BIND_PORT"; is_lh="$NEBULA_INFO_IS_LH"; src="cache"
+        lh_hosts="$NEBULA_INFO_LH_HOSTS"; static_hosts="$NEBULA_INFO_STATIC_HOSTS"
     fi
 
     if [[ -n "$tun" || -n "$port" || -n "$is_lh" ]]; then
@@ -913,6 +993,7 @@ show_system_info() {
         echo -e "$(show_status 'success') ${BOLD}${YELLOW}Network:${RESET} ${ip_addr:-?} - ${tun:-?} (${host:-?}:${port:-?})$note"
         echo -e -n "$(show_status 'success') ${BOLD}${YELLOW}State:${RESET} "
         [[ "$is_lh" == "true" ]] && echo -e "Lighthouse" || echo -e "Client"
+        _nebula_warn_missing_network "$is_lh" "$lh_hosts" "$static_hosts" "$nebula_config"
         return 0
     fi
 
@@ -921,11 +1002,13 @@ show_system_info() {
     if [[ -n "$guess" ]]; then
         local gif="${guess%% *}" gip="${guess#* }"
         echo -e "$(show_status 'success') ${BOLD}${YELLOW}Network:${RESET} ${gip%%/*} - $gif ${GRAY}(port not shown; see Diagnostics)${RESET}"
+        _nebula_unverified_config_note "$nebula_config"
         return 0
     fi
 
     # 5) Nothing available: a notice (not an error) pointing at the in-app action.
-    echo -e "$(show_status 'info') ${BOLD}${YELLOW}Network:${RESET} ${GRAY}not shown yet - choose Diagnostics to read the service config once with temporary sudo${RESET}"
+    echo -e "$(show_status 'info') ${BOLD}${YELLOW}Network:${RESET} ${GRAY}not shown yet${RESET}"
+    _nebula_unverified_config_note "$nebula_config"
     return 0
 }
 
