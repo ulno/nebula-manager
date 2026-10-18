@@ -149,7 +149,7 @@ import_detect() {
         pki_ca="$(_imp_section_key "$cfg" pki ca)"
         [[ -n "$pki_ca" ]] && IMP_CERTS_DIR="$(dirname "$pki_ca")"
         # Refresh the startup-header cache from this (possibly elevated) read.
-        _nebula_info_derive "$cfg" >/dev/null 2>&1 || true
+        _nebula_info_derive "$cfg" "$IMP_CONFIG" >/dev/null 2>&1 || true
     fi
     [[ -z "$IMP_PORT" || "$IMP_PORT" == "0" ]] && IMP_PORT="$(autodetect_nebula_port 2>/dev/null)"
 

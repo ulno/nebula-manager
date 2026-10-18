@@ -278,8 +278,8 @@ check_nebula_config() {
     fi
     local cfg="$r" tmp=""
     [[ "$cfg" != "$config_file" ]] && tmp="$cfg"
-    # Refresh the header cache from this successful read.
-    _nebula_info_derive "$cfg" >/dev/null 2>&1 || true
+    # Refresh the header cache from this successful read (keyed by the real path).
+    _nebula_info_derive "$cfg" "$config_file" >/dev/null 2>&1 || true
 
     echo -e "$(show_status 'info') ${CYAN}Testing Nebula config: ${config_file}${RESET}"
     local output status
@@ -288,6 +288,31 @@ check_nebula_config() {
     debug_print_cmd "$(nebula_bin)" -test -config "$cfg"
     output="$("$(nebula_bin)" -test -config "$cfg" 2>&1)"
     status=$?
+
+    # A config readable only via elevation usually references key/cert files
+    # that are service-owned too. Offer a one-time elevated validation rather
+    # than reporting a misleading "invalid config".
+    if (( status != 0 )) && grep -qiE 'permission denied|unable to read pki|open .*: permission denied' <<<"$output"; then
+        local do_elev=0
+        if is_root; then
+            do_elev=0   # already root; the first run used the same privileges
+        elif sudo -n true 2>/dev/null; then
+            do_elev=1   # credentials are already cached (e.g. after the read)
+        elif [[ "${NEBULA_NO_PROMPT:-0}" != 1 && -t 0 && -t 2 ]] && command -v sudo >/dev/null 2>&1; then
+            local a
+            read -rp "$(show_status 'question') The config's key/cert files are not readable. Run the test once with temporary sudo? [y/N]: " a
+            [[ "$a" =~ ^[Yy] ]] && do_elev=1
+        fi
+        if (( do_elev )); then
+            echo -e "$(show_status 'info') ${CYAN}Re-testing with temporary sudo (needs the key/cert files)...${RESET}"
+            output="$(elevate_why "validate the Nebula config (reads its key/cert files)" \
+                "$(nebula_bin)" -test -config "$config_file" 2>&1)"
+            status=$?
+        elif (( status != 0 )) && ! is_root; then
+            log_info "The key/cert files are service-owned; approve the temporary sudo read in an interactive run, or grant read access to them."
+        fi
+    fi
+
     [[ -n "$tmp" ]] && rm -f "$tmp"
     if [[ $status -eq 0 ]]; then
         echo -e "$(show_status 'success') ${GREEN}Nebula config is valid${RESET} $(get_icon 'validate')"
@@ -924,10 +949,13 @@ _nebula_unverified_config_note() {
     echo -e "    ${GRAY}choose Diagnostics or Configuration > Validate Config to authorize a one-time read.${RESET}"
 }
 
-# _nebula_info_derive <readable_config> : parse the values, refresh the cache,
-# and print "tun|bind_host|bind_port|is_lh|lh_hosts|static_hosts".
+# _nebula_info_derive <readable_config> [source_config] : parse the values,
+# refresh the cache, and print "tun|bind_host|bind_port|is_lh|lh_hosts|static_hosts".
+# source_config is the real config path (the first arg may be a temporary,
+# readable copy); the cache must be keyed by the real path.
 _nebula_info_derive() {
-    local cfg="$1" tun host port is_lh lh_hosts static_hosts
+    local cfg="$1" src="${2:-$1}"
+    local tun host port is_lh lh_hosts static_hosts
     tun="$(iface_from_config "$cfg")"
     host="$(awk '/listen:/,/port:/{if($1~/^host:/){gsub(/\r|\n|"/,"",$2);print $2}}' "$cfg")"
     port="$(awk '/listen:/,/port:/{if($1~/^port:/){gsub(/\r|\n|"/,"",$2);print $2}}' "$cfg")"
@@ -940,7 +968,7 @@ _nebula_info_derive() {
     if grep -q '^ *am_lighthouse: true' "$cfg"; then is_lh="true"; else is_lh="false"; fi
     lh_hosts="$(_nebula_count_lh_hosts "$cfg")"
     static_hosts="$(_nebula_count_static_hosts "$cfg")"
-    _nebula_info_save "$cfg" "$tun" "$host" "$port" "$is_lh" "$lh_hosts" "$static_hosts"
+    _nebula_info_save "$src" "$tun" "$host" "$port" "$is_lh" "$lh_hosts" "$static_hosts"
     printf '%s|%s|%s|%s|%s|%s' "$tun" "$host" "$port" "$is_lh" "$lh_hosts" "$static_hosts"
 }
 

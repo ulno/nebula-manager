@@ -278,7 +278,7 @@ diagnostics_view() {
         [[ -n "$cfg_file" && "$cfg_file" != "$configured_config" ]] && tmp_cfg="$cfg_file"
     fi
     # A successful (possibly elevated) read refreshes the startup-header cache.
-    [[ -n "$cfg_file" ]] && { _nebula_info_derive "$cfg_file" >/dev/null 2>&1 || true; }
+    [[ -n "$cfg_file" ]] && { _nebula_info_derive "$cfg_file" "$configured_config" >/dev/null 2>&1 || true; }
 
     echo -e "${BOLD}${CYAN}Nebula Manager diagnostics${RESET}"
     echo -e "${CYAN}------------------------------------------------------------${RESET}"
@@ -327,7 +327,16 @@ diagnostics_view() {
     if [[ -n "$cfg_file" ]]; then
         local cfg_cert
         cfg_cert="$(awk -F: '/^[[:space:]]*cert[[:space:]]*:/ {gsub(/\r|\n|"/,"",$2); gsub(/^[ \t]+|[ \t]+$/,"",$2); print $2; exit}' "$cfg_file")"
-        [[ -n "$cfg_cert" && -f "$cfg_cert" ]] && candidates+=("$cfg_cert")
+        # Only use the configured cert when it is readable and not simply the
+        # same file/basename we already have in the certificate workspace.
+        if [[ -n "$cfg_cert" && -f "$cfg_cert" && -r "$cfg_cert" ]]; then
+            local dupe=0 c base
+            base="$(basename "$cfg_cert")"
+            for c in "$certs_dir"/*.crt; do
+                [[ -f "$c" && "$(basename "$c")" == "$base" ]] && { dupe=1; break; }
+            done
+            (( dupe )) || candidates+=("$cfg_cert")
+        fi
     fi
     local cert
     for cert in "$certs_dir"/*.crt; do
