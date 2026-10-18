@@ -329,6 +329,7 @@ file/directory browsing automatically uses `whiptail` when it is installed.
 | `--config <path>` | Override `nebula-manager.conf` location |
 | `--cert-dir <path>` | Certificate workspace (overrides everything) |
 | `--ui auto\|plain\|whiptail\|dialog` | Force a UI backend |
+| `--debug <levels>` | Debug mode: `warn\|log\|info\|learn\|all` (comma-separated; see below) |
 | `--no-color` | Disable coloured output |
 
 ### Environment variables
@@ -344,6 +345,47 @@ file/directory browsing automatically uses `whiptail` when it is installed.
 | `NEBULA_UI` | UI backend. Default (*unset*/`auto`) = **plain numbered menus**; `whiptail`/`dialog` are used automatically for file/dir browsing when available, or set one to force a curses UI everywhere |
 | `NEBULA_NO_PROMPT` | Set to `1` to never prompt; unreadable privileged files are skipped instead of read via sudo (used internally for state detection) |
 | `NEBULA_DEFAULT_PORT` | Fallback Nebula listen port for diagnostics (default `4242`) |
+| `DEBUG` | Debug levels: `warn`, `log` (default), `info`, `learn`, `all` — same as `--debug` |
+
+### Debug modes (`DEBUG` / `--debug`)
+
+`DEBUG=learn` is the teaching mode: **every `nebula` / `nebula-cert` command is
+printed (to stderr) immediately before it runs**, so you can watch — and later
+reproduce — what the menus actually do. Normal output is unchanged and stdout
+stays clean for scripts.
+
+| Level | What you see |
+|---|---|
+| `warn` | only warnings/errors (hides normal info/success lines) |
+| `log` | classic output (the default when `DEBUG` is unset) |
+| `info` | classic output + resolved config/cert-dir and binary detection (stderr) |
+| `learn` | classic output + each Nebula CLI command before execution (stderr) |
+| `all` | `info` + `learn` |
+
+Levels can be combined, e.g. `DEBUG=warn,learn` (quiet, but show commands).
+
+```bash
+# See the exact commands while signing a certificate
+DEBUG=learn ./nebula-manager sign --cert-dir ~/keys/nebula --name host2 --ip 10.42.0.3/24
+
+# Reproduce it by hand:
+nebula-cert sign -name host2 -ip 10.42.0.3/24 \
+  -ca-crt ~/keys/nebula/ca.crt -ca-key ~/keys/nebula/ca.key \
+  -out-crt ~/keys/nebula/host2.crt -out-key ~/keys/nebula/host2.key
+
+# Headless debugging: details and commands on stderr, data on stdout
+DEBUG=all ./nebula-manager cert list > certs.txt
+
+# Same via the flag
+./nebula-manager --debug=info paths
+```
+
+The learn lines look like:
+
+```text
+[learn] /usr/bin/nebula-cert sign -name host2 -ip 10.42.0.3/24 -ca-crt ... -ca-key ... -out-crt ... -out-key ...
+[learn] sudo systemctl restart nebula.service
+```
 
 ---
 
@@ -514,6 +556,7 @@ What it covers:
 | `tests/test_update.sh` | update source resolution (origin/env) + no-downgrade version comparison |
 | `tests/test_realstore_readonly.sh` | uses a real cert store **read-only** (hashes unchanged, no `sudo`) |
 | `tests/test_cli.sh` | CLI parsing, flag precedence, usage/exit codes, end-to-end unprivileged PKI |
+| `tests/test_debug.sh` | `DEBUG` levels: `learn` prints Nebula CLI commands to stderr only, `warn` hides info, stdout stays clean |
 | `tests/pki.bats` | BATS mirror of the core unprivileged-PKI guarantees |
 
 Requirements: `bash`, `nebula-cert` (for PKI tests; auto-skipped otherwise).

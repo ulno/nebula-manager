@@ -48,22 +48,29 @@ load_cert_dir_selection() {
 # resolve_cert_dir : print the active certificate workspace directory.
 resolve_cert_dir() {
     if [[ -n "${CERT_DIR_OVERRIDE:-}" ]]; then
+        debug_info "cert-dir: --cert-dir -> $CERT_DIR_OVERRIDE"
         printf '%s\n' "$CERT_DIR_OVERRIDE"; return 0
     fi
     if [[ -n "${NEBULA_KEYS_DIR:-}" ]]; then
+        debug_info "cert-dir: NEBULA_KEYS_DIR -> $NEBULA_KEYS_DIR"
         printf '%s\n' "$NEBULA_KEYS_DIR"; return 0
     fi
     if [[ -n "${CERT_DIR_SELECTED:-}" ]]; then
+        debug_info "cert-dir: saved selection -> $CERT_DIR_SELECTED"
         printf '%s\n' "$CERT_DIR_SELECTED"; return 0
     fi
     local saved; saved="$(load_cert_dir_selection)"
     if [[ -n "$saved" ]]; then
+        debug_info "cert-dir: saved workspace -> $saved"
         printf '%s\n' "$saved"; return 0
     fi
     if [[ -n "${NEBULA_DIR:-}" ]]; then
+        debug_info "cert-dir: legacy server dir -> ${NEBULA_DIR}/${NEBULA_CERT_FOLDER:-certs}"
         printf '%s\n' "${NEBULA_DIR}/${NEBULA_CERT_FOLDER:-certs}"; return 0
     fi
-    nebula_keys_default_dir
+    local fallback; fallback="$(nebula_keys_default_dir)"
+    debug_info "cert-dir: default user store -> $fallback"
+    printf '%s\n' "$fallback"
 }
 
 # The active workspace, materialised (created if missing).
@@ -219,13 +226,16 @@ select_cert_workspace() {
 pki_cert_bin() {
     local bin="${NEBULA_BIN_PATH:-/usr/local/bin}/nebula-cert"
     if [[ -x "$bin" ]]; then
+        debug_info "nebula-cert: $bin"
         printf '%s\n' "$bin"; return 0
     fi
     local resolved
     resolved="$(command -v nebula-cert 2>/dev/null)"
     if [[ -n "$resolved" ]]; then
         # Always hand back an absolute path so callers can dirname it safely.
-        printf '%s\n' "$(readlink -f "$resolved")"; return 0
+        resolved="$(readlink -f "$resolved")"
+        debug_info "nebula-cert: $resolved (from PATH)"
+        printf '%s\n' "$resolved"; return 0
     fi
     log_error "nebula-cert not found (looked at $bin and \$PATH). Install Nebula first."
     return 1
@@ -235,7 +245,7 @@ pki_cert_bin() {
 nebula_cert_json() {
     local bin_path="$1"
     local cert_path="$2"
-    "$bin_path/nebula-cert" print -json -path "$cert_path" 2>/dev/null | \
+    debug_run_quiet "$bin_path/nebula-cert" print -json -path "$cert_path" | \
         jq -r '
             if type == "array" then .[0] else . end |
             if .details.networks and (.details.ips | not) then .details.ips = .details.networks else . end |
@@ -295,7 +305,7 @@ pki_ca_create() {
 
     ensure_dir "$cert_dir" || return 1
     rm -f "$cert_dir/ca.crt" "$cert_dir/ca.key"
-    if "${args[@]}"; then
+    if debug_run "${args[@]}"; then
         log_success "CA generated: $cert_dir/ca.key, $cert_dir/ca.crt"
         return 0
     fi
@@ -338,7 +348,7 @@ pki_sign() {
     [[ -n "${SIGN_QR:-}"         ]] && args+=(-out-qr "$SIGN_QR")
 
     ensure_dir "$cert_dir" || return 1
-    if "${args[@]}"; then
+    if debug_run "${args[@]}"; then
         if [[ -n "$in_pub" ]]; then
             log_success "Certificate signed for device key: $out_crt"
         else
@@ -359,7 +369,7 @@ generate_nebula_ca() {
 
     if [[ -f "$ca_key" && -f "$ca_crt" ]]; then
         log_info "CA already exists:"
-        "$(pki_cert_bin)" print -path "$ca_crt"
+        debug_run "$(pki_cert_bin)" print -path "$ca_crt"
         read -p "$(show_status 'question') CA already exists. Do you want to overwrite it? (y/n): " overwrite
         [[ "$overwrite" != "y" ]] && { log_info "CA generation canceled."; return; }
     fi
@@ -541,7 +551,7 @@ generate_nebula_cert() {
 
     if [[ -f "$cert_dir/$cert_gen_name.crt" ]]; then
         log_info "Certificate $cert_gen_name already exists in $cert_dir"
-        "$(pki_cert_bin)" print -path "$cert_dir/$cert_gen_name.crt"
+        debug_run "$(pki_cert_bin)" print -path "$cert_dir/$cert_gen_name.crt"
         read -p "$(show_status 'question') Do you want to overwrite this certificate? (y/n): " overwrite_choice
         [[ "$overwrite_choice" != "y" ]] && { log_info "Certificate generation aborted."; return; }
     fi

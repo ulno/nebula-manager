@@ -41,7 +41,7 @@ bench_server() {
     [[ -n "$bind" ]] && args+=(-B "$bind")
     (( ${#extra[@]} )) && args+=("${extra[@]}")
     log_info "Starting iperf3 server on port ${CYAN}$port${RESET} (Ctrl-C to stop)..."
-    "${args[@]}"
+    debug_run "${args[@]}"
 }
 
 # bench_client <host> [--port P] [--time SEC] [--streams N] [--reverse] [extra...]
@@ -65,7 +65,7 @@ bench_client() {
     (( reverse )) && args+=(-R)
     (( ${#extra[@]} )) && args+=("${extra[@]}")
     log_info "Running iperf3 to ${MAGENTA}$host${CYAN} (port $port, ${duration}s, ${streams} stream(s))${RESET}..."
-    "${args[@]}"
+    debug_run "${args[@]}"
     local rc=$?
     if (( rc == 0 )); then log_success "iperf3 completed successfully."
     else log_error "iperf3 exited with code ${rc}."; fi

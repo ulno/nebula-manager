@@ -62,6 +62,8 @@ MOCK
 
     # Quiet, deterministic, non-interactive UI.
     export USE_COLOR=false USE_ICONS=false NEBULA_UI=plain
+    # Never inherit a developer's DEBUG setting.
+    unset DEBUG 2>/dev/null || true
 
     # Point NEBULA_BIN_PATH at a real nebula-cert if we can find one.
     local cert_bin

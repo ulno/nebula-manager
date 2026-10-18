@@ -32,6 +32,7 @@ elevate() {
         return 2
     fi
     if is_root; then
+        debug_print_cmd "$@"
         "$@"
         return $?
     fi
@@ -39,6 +40,7 @@ elevate() {
         log_error "This action requires root privileges, but 'sudo' is not installed."
         return 1
     fi
+    debug_print_cmd sudo "$@"
     # Announce the reason + command when a password is likely required
     # (i.e. no cached credentials). Uses sudo -n so nothing is prompted here.
     if ! sudo -n true 2>/dev/null; then
@@ -48,7 +50,8 @@ elevate() {
         else
             log_warn "Administrator privileges required for: ${BOLD}$1${RESET}"
         fi
-        echo -e "    ${CYAN}command:${RESET} ${RESET}sudo $*" >&2
+        # DEBUG=learn already printed the exact command above.
+        debug_want learn || echo -e "    ${CYAN}command:${RESET} ${RESET}sudo $*" >&2
     fi
     if ! sudo "$@"; then
         log_error "Elevation failed (or was declined) for: sudo $*"
@@ -252,7 +255,8 @@ check_nebula_installed() {
     # distro-installed nebula (e.g. /usr/bin/nebula) is still recognised.
     local bin; bin="$(nebula_bin)"
     [[ -n "$bin" && -x "$bin" ]] || return 1
-    NEBULA_VERSION="$("$bin" --version 2>/dev/null | grep -i "version" | awk '{print $2}')"
+    debug_info "Nebula binary: $bin"
+    NEBULA_VERSION="$(debug_run_quiet "$bin" --version | grep -i "version" | awk '{print $2}')"
     return 0
 }
 
@@ -278,6 +282,9 @@ check_nebula_config() {
 
     echo -e "$(show_status 'info') ${CYAN}Testing Nebula config: ${config_file}${RESET}"
     local output status
+    # Print separately: command substitution captures stderr, which must stay
+    # free of debug lines (it becomes the diagnostic output below).
+    debug_print_cmd "$(nebula_bin)" -test -config "$cfg"
     output="$("$(nebula_bin)" -test -config "$cfg" 2>&1)"
     status=$?
     [[ -n "$tmp" ]] && rm -f "$tmp"
@@ -1026,8 +1033,15 @@ auto_update_cron_menu() {
 #   --config / $NEBULA_MANAGER_CONF  ->  existing /etc config  ->  per-user config
 # The per-user default means a first run never needs root just to get a config.
 resolve_server_conf() {
-    if [[ -n "${CONF_OVERRIDE:-}" ]]; then printf '%s' "$CONF_OVERRIDE"; return 0; fi
-    if [[ -f "$SYSTEM_SERVER_CONF" ]]; then printf '%s' "$SYSTEM_SERVER_CONF"; return 0; fi
+    if [[ -n "${CONF_OVERRIDE:-}" ]]; then
+        debug_info "config: --config/NEBULA_MANAGER_CONF -> $CONF_OVERRIDE"
+        printf '%s' "$CONF_OVERRIDE"; return 0
+    fi
+    if [[ -f "$SYSTEM_SERVER_CONF" ]]; then
+        debug_info "config: using existing system config -> $SYSTEM_SERVER_CONF"
+        printf '%s' "$SYSTEM_SERVER_CONF"; return 0
+    fi
+    debug_info "config: per-user default -> ${XDG_CONFIG_HOME:-$HOME/.config}/nebula-manager/nebula-manager.conf"
     printf '%s' "${XDG_CONFIG_HOME:-$HOME/.config}/nebula-manager/nebula-manager.conf"
 }
 

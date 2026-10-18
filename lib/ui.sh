@@ -132,10 +132,106 @@ show_status() {
     fi
 }
 
+###################################################################
+########################## Debug modes ###########################
+###################################################################
+# DEBUG=warn|log|info|learn|all   (comma-separated combinations allowed)
+#
+#   warn    only warnings/errors (normal info/success chatter is hidden)
+#   log     classic behaviour (the default when DEBUG is unset)
+#   info    log + internal detection/resolution details
+#   learn   log + every Nebula CLI command *before* it runs, so you can
+#           reproduce/learn the underlying `nebula-cert` / `nebula` calls
+#   all     info + learn
+#
+# Everything debug-related is written to stderr: stdout stays clean for
+# scriptable output (menus, JSON, printed paths, ...).
+_NM_DEBUG_INIT=0
+_NM_DEBUG_RAW=""
+_NM_DEBUG_INFO=0
+_NM_DEBUG_LEARN=0
+_NM_DEBUG_QUIET=0
+
+_nm_debug_apply() {
+    local raw="${DEBUG:-}" d tok bad=""
+    d="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
+    _NM_DEBUG_INFO=0; _NM_DEBUG_LEARN=0; _NM_DEBUG_QUIET=0
+    _NM_DEBUG_RAW="$raw"
+    _NM_DEBUG_INIT=1
+    case "$d" in
+        ""|0|false|off) return 0 ;;
+    esac
+    local IFS=','
+    for tok in $d; do
+        case "$tok" in
+            all|learn) _NM_DEBUG_INFO=1; _NM_DEBUG_LEARN=1 ;;
+            info)      _NM_DEBUG_INFO=1 ;;
+            warn)      _NM_DEBUG_QUIET=1 ;;
+            log)       : ;;
+            "")        : ;;
+            *)         bad+="${bad:+, }$tok" ;;
+        esac
+    done
+    if [[ -n "$bad" ]]; then
+        printf '[debug] unknown DEBUG level(s): %s (use warn|log|info|learn|all)\n' "$bad" >&2
+    fi
+}
+
+# Re-parse only when DEBUG changed (cheap for the many log calls).
+_nm_debug_ensure() {
+    [[ "$_NM_DEBUG_INIT" == 1 && "$_NM_DEBUG_RAW" == "${DEBUG:-}" ]] && return 0
+    _nm_debug_apply
+}
+
+# debug_want <learn|info|warn|log>
+debug_want() {
+    _nm_debug_ensure
+    case "${1:-}" in
+        learn) (( _NM_DEBUG_LEARN == 1 )) ;;
+        info)  (( _NM_DEBUG_INFO  == 1 )) ;;
+        warn)  (( _NM_DEBUG_QUIET == 1 )) ;;
+        log)   (( _NM_DEBUG_QUIET == 0 )) ;;
+        *)     return 1 ;;
+    esac
+}
+
+# debug_info <message...> : extra internal detail (stderr only).
+debug_info() {
+    debug_want info || return 0
+    local prefix="[debug]"
+    [[ "${USE_COLOR:-true}" != "false" ]] && prefix="${CYAN}[debug]${RESET}"
+    printf '%b %s\n' "$prefix" "$*" >&2
+}
+
+# debug_print_cmd <cmd> [args...] : show a command exactly as it will run.
+debug_print_cmd() {
+    debug_want learn || return 0
+    local a quoted out="" prefix="[learn]"
+    [[ "${USE_COLOR:-true}" != "false" ]] && prefix="${CYAN}[learn]${RESET}"
+    for a in "$@"; do
+        printf -v quoted '%q' "$a"
+        out+="${out:+ }$quoted"
+    done
+    printf '%b %s\n' "$prefix" "$out" >&2
+}
+
+# debug_run <cmd> [args...] : print (learn mode) then execute.
+debug_run() {
+    debug_print_cmd "$@"
+    "$@"
+}
+
+# debug_run_quiet <cmd> [args...] : like debug_run, but discard the command's
+# own stderr (for optional probes). The learn line is still printed to stderr.
+debug_run_quiet() {
+    debug_print_cmd "$@"
+    "$@" 2>/dev/null
+}
+
 # Headless-friendly logging helpers. Errors/warnings go to stderr so that
-# scriptable output on stdout stays clean.
-log_info()    { echo -e "$(show_status 'info') $*"; }
-log_success() { echo -e "$(show_status 'success') $*"; }
+# scriptable output on stdout stays clean. DEBUG=warn silences info/success.
+log_info()    { debug_want log || return 0; echo -e "$(show_status 'info') $*"; }
+log_success() { debug_want log || return 0; echo -e "$(show_status 'success') $*"; }
 log_warn()    { echo -e "$(show_status 'warning') $*" >&2; }
 log_error()   { echo -e "$(show_status 'error') $*" >&2; }
 
