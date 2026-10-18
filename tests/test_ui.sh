@@ -17,6 +17,16 @@ assert_eq "plain menu returns the chosen tag" "$out" "b"
 out="$(printf '1\n' | ui_menu "Title" "Pick one" create "Create" browse "Browse" cancel "Cancel")"
 assert_eq "plain menu returns first tag" "$out" "create"
 
+# --- a menu can optionally accept typed text -------------------------------
+out="$(printf '2\n' | ui_menu_or_text "Title" "Pick one" a "First" b "Second")"
+assert_eq "menu_or_text returns the chosen tag" "$out" "b"
+
+out="$(printf 'host1\n' | ui_menu_or_text "Title" "Pick one" a "First" b "Second")"
+assert_eq "menu_or_text accepts typed text" "$out" "text:host1"
+
+printf '\n' | ui_menu_or_text "Title" "Pick one" a "First" >/dev/null 2>&1; rc=$?
+assert_eq "menu_or_text rejects empty input" "$rc" "2"
+
 # --- display (title + options) goes to stderr, not stdout ---
 err="$(printf '1\n' | ui_menu "MenuTitle" "Pick one" a "First option" b "Second option" 2>&1 >/dev/null)"
 assert_contains "title shown on stderr"   "$err" "MenuTitle"

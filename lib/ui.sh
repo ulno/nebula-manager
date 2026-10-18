@@ -568,6 +568,36 @@ ui_menu() {
     printf '%s' "$choice"
 }
 
+# ui_menu_or_text <title> <prompt> <tag> <desc> [...]
+# Like ui_menu, but in plain mode any non-numeric input is accepted and returned
+# as "text:<value>" (instead of being rejected). Curses backends cannot accept
+# free text and return the chosen tag as usual. Return codes: 0 = chose,
+# 2 = empty/invalid input, 1 = cancel/EOF.
+ui_menu_or_text() {
+    local title="$1" prompt="$2"; shift 2
+    local backend; backend="$(ui_backend)"
+    if [[ "$backend" != "plain" ]]; then
+        ui_menu "$title" "$prompt" "$@"
+        return
+    fi
+    echo -e "${BOLD}$title${RESET}" >&2
+    [[ -n "$prompt" ]] && echo -e "$prompt" >&2
+    local -a tags=()
+    while (( $# )); do
+        tags+=("$1")
+        printf "  ${BOLD}${YELLOW}%d.${RESET} %s\n" "${#tags[@]}" "$2" >&2
+        shift 2
+    done
+    local answer
+    read -rp "$(show_status 'question') Selection (number, name, or path): " answer || return 1
+    if [[ "$answer" =~ ^[0-9]+$ ]] && (( answer >= 1 && answer <= ${#tags[@]} )); then
+        printf '%s' "${tags[$((answer-1))]}"
+        return 0
+    fi
+    [[ -n "$answer" ]] && { printf 'text:%s' "$answer"; return 0; }
+    return 2
+}
+
 # ui_choose_or_path <title> <prompt> <tag> <desc> [...]
 # Like ui_menu, but in plain mode a typed filesystem path is ALSO accepted and
 # returned as "path:<value>" (so a user can either pick a number or just type

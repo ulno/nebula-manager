@@ -128,6 +128,14 @@ assert_contains "TUI lists the certificate" "$(cat "$ERR")" "solo"
 assert_contains "TUI shows the cert IP" "$(cat "$ERR")" "10.60.0.2/24"
 assert_file "TUI wrote the bundle" "$TUI_OUT/solo-nebula-bundle.zip"
 
+# Typing a (partial) name at the selection prompt also works - no need to
+# choose "Type a certificate name manually".
+TUI_TYPED_OUT="$SANDBOX/tui-typed-out"
+out="$(printf 'sol\n%s\n' "$TUI_TYPED_OUT" | CERT_DIR_SELECTED="$TUI_KEYS" pki_bundle_client_menu 2>"$ERR")"
+assert_eq "TUI accepts a typed name at the menu" "$?" "0"
+assert_contains "TUI reports the typed-name match" "$out" "Matched 'sol' -> 'solo'"
+assert_file "TUI typed-name bundle written" "$TUI_TYPED_OUT/solo-nebula-bundle.zip"
+
 # Empty input at the output prompt uses the sensible default (the start dir).
 mkdir -p "$SANDBOX/tui-default"
 out="$(cd "$SANDBOX/tui-default" && printf '1\n\n' | CERT_DIR_SELECTED="$TUI_KEYS" pki_bundle_client_menu 2>/dev/null)"

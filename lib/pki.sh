@@ -1145,14 +1145,21 @@ pki_bundle_client_menu() {
         log_info "Create one first: Certificates > Generate Client Certificate."
         return 1
     fi
-    pairs+=( "__custom__" "Type a certificate name manually..." )
+    # Curses menus can only pick an entry; plain menus also accept a typed name
+    # (or path) directly at the selection prompt, so the extra entry is unneeded.
+    if [[ "$(ui_backend)" != "plain" ]]; then
+        pairs+=( "__custom__" "Type a certificate name manually..." )
+    fi
 
     local choice
-    choice="$(ui_menu "Bundle / Export Client" "Select the certificate to export:" "${pairs[@]}")" || return 0
-    if [[ "$choice" == "__custom__" ]]; then
-        read -p "$(show_status 'question') Certificate name (or path): " choice
-        [[ -z "$choice" ]] && return 0
-    fi
+    choice="$(ui_menu_or_text "Bundle / Export Client" "Select the certificate to export:" "${pairs[@]}")" || return 0
+    case "$choice" in
+        text:*)  choice="${choice#text:}" ;;
+        __custom__)
+            read -p "$(show_status 'question') Certificate name (or path): " choice
+            [[ -z "$choice" ]] && return 0
+            ;;
+    esac
 
     pki_resolve_bundle_name "$choice" "$cert_dir"
     case $? in

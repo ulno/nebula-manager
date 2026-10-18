@@ -217,8 +217,10 @@ The app also needs the **CA certificate** (paste `ca.crt`, or scan a QR made wit
 **Certificates ▸ Bundle / Export Client Certificate** lists every certificate
 that can actually be exported (a matching `.crt` and `.key`), showing its
 overlay IP and groups. CAs and mobile certs signed with `--in-pub` are skipped
-because there is no local private key to ship. Pick one, then confirm the output
-directory in a browser/prompt.
+because there is no local private key to ship. In **plain mode you can type a
+(partial) name or path directly** at the selection prompt instead of picking a
+number; the curses menu offers a *Type a certificate name manually…* entry.
+Then confirm the output directory in a browser/prompt.
 
 Headless usage accepts a **unique substring** (case-insensitive) instead of the
 exact name, and lists candidates when the name is omitted or ambiguous:
