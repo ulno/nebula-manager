@@ -238,6 +238,14 @@ nebula-manager was started in → `~/Downloads` → `~/tmp` → `$TMPDIR`. The z
 contains the cert, key, `ca.crt` and a `config.yml.template`, and is written
 mode **0600** because it holds the private key.
 
+The template is **populated from the running Nebula config** when one can be
+read (`static_host_map`, `lighthouse.hosts`/`interval`, `punchy`, `listen`,
+`tun` and the `firewall` policy). If no readable local config exists, it derives
+lighthouses from the `[server.*]` entries plus the certificate workspace. Any
+value it still cannot determine is left commented out, listed at the top of the
+file, and reported as a warning — so a bundle never silently ships a config with
+missing lighthouses.
+
 ### Resolution precedence
 
 1. `--cert-dir <path>` (CLI flag — highest priority)
@@ -358,6 +366,7 @@ file/directory browsing automatically uses `whiptail` when it is installed.
 | `--cert-dir <path>` | Certificate workspace (overrides everything) |
 | `--ui auto\|plain\|whiptail\|dialog` | Force a UI backend |
 | `--debug <levels>` | Debug mode: `warn\|log\|info\|learn\|all` (comma-separated; see below) |
+| `-l`, `--learn` | Shorthand for `--debug=learn` |
 | `--no-color` | Disable coloured output |
 
 ### Environment variables
@@ -366,6 +375,8 @@ file/directory browsing automatically uses `whiptail` when it is installed.
 |---|---|
 | `NEBULA_KEYS_DIR` | Certificate workspace (2nd precedence, after `--cert-dir`) |
 | `NEBULA_BUNDLE_DIR` | Default directory for exported client bundles (default: start dir, then `~/Downloads`, `~/tmp`) |
+| `NEBULA_LOCAL_CONFIG` | Explicit Nebula `config.yml` used to populate generated client templates (default: active server dir, then `/etc/nebula/config.yml`) |
+| `NEBULA_NO_LOCAL_CONFIG` | Set to `1` to skip auto-detecting the host's Nebula config for templates (an explicit `NEBULA_LOCAL_CONFIG` still applies) |
 | `NEBULA_MANAGER_LIB` | Override the `lib/` module directory |
 | `NEBULA_MANAGER_CONF` | Path to `nebula-manager.conf` (alias for `--config`) |
 | `NEBULA_MANAGER_REPO` | `owner/repo` used for update checks / templates (default: git `origin`) |
@@ -381,7 +392,8 @@ file/directory browsing automatically uses `whiptail` when it is installed.
 `DEBUG=learn` is the teaching mode: **every `nebula` / `nebula-cert` command is
 printed (to stderr) immediately before it runs**, so you can watch — and later
 reproduce — what the menus actually do. Normal output is unchanged and stdout
-stays clean for scripts.
+stays clean for scripts. `-l` and `--learn` are direct shortcuts for
+`--debug=learn`.
 
 | Level | What you see |
 |---|---|
@@ -405,8 +417,10 @@ nebula-cert sign -name host2 -ip 10.42.0.3/24 \
 # Headless debugging: details and commands on stderr, data on stdout
 DEBUG=all ./nebula-manager cert list > certs.txt
 
-# Same via the flag
+# Same via the flag, or the learn shorthand
 ./nebula-manager --debug=info paths
+./nebula-manager --learn cert list
+./nebula-manager -l cert list
 ```
 
 The learn lines look like:
@@ -587,6 +601,7 @@ What it covers:
 | `tests/test_cli.sh` | CLI parsing, flag precedence, usage/exit codes, end-to-end unprivileged PKI |
 | `tests/test_debug.sh` | `DEBUG` levels: `learn` prints Nebula CLI commands to stderr only, `warn` hides info, stdout stays clean |
 | `tests/test_bundle.sh` | client export: candidate listing, substring/ambiguous matching, default output dir, TUI picker, mode 0600 |
+| `tests/test_client_config.sh` | generated client template: real static_host_map/lighthouse/punchy/listen/tun/firewall from the local config, `[server.*]` fallback, and missing-value warnings |
 | `tests/pki.bats` | BATS mirror of the core unprivileged-PKI guarantees |
 
 Requirements: `bash`, `nebula-cert` (for PKI tests; auto-skipped otherwise).

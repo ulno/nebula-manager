@@ -178,9 +178,12 @@ $ nebula-manager cert bundle theprof4.theprof.mesh --out ./bundles
 ```
 
 Each bundle (`./bundles/theprof3.theprof.mesh-nebula-bundle.zip`) contains the cert, key,
-`ca.crt` and a `config.yml.template` (with `static_host_map`/`lighthouse.hosts`
-placeholders). He also edits the **firewall** so home machines can talk to each
-other without restrictions:
+`ca.crt` and a `config.yml.template`. The template is populated from the running
+Nebula config (or from the `[server.*]` entries + certificates): real
+`static_host_map`/`lighthouse.hosts`, `punchy`, `listen`, `tun` and the firewall
+policy. Anything that cannot be determined is flagged in the file and as a
+warning instead of being silently left as a placeholder. He also edits the
+**firewall** so home machines can talk to each other without restrictions:
 
 ```yaml
 firewall:

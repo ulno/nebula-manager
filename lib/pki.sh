@@ -895,37 +895,413 @@ revoke_cert() {
 ######################### Client bundling ##########################
 ###################################################################
 
-# Write a minimal, ready-to-edit nebula config template for a client bundle.
+###################################################################
+############ Network settings for generated client configs ########
+###################################################################
+
+# _pki_cfg_scalar <file> <section> <key>
+_pki_cfg_scalar() {
+    awk -v sec="$2" -v key="$3" '
+        { sub(/\r$/, "") }
+        /^[[:space:]]*#/ { next }
+        $0 ~ "^"sec":" { insec=1; next }
+        /^[^[:space:]#]/ { insec=0 }
+        insec && $0 ~ "^[[:space:]]+"key"[[:space:]]*:" {
+            v = $0
+            sub(/^[^:]*:[[:space:]]*/, "", v)
+            sub(/[[:space:]]*#.*$/, "", v)
+            gsub(/"/, "", v)
+            print v; exit
+        }' "$1" 2>/dev/null
+}
+
+# _pki_static_hosts <file> -> "ip<TAB>public-host:port" (one per endpoint)
+_pki_static_hosts() {
+    awk '
+        { sub(/\r$/, "") }
+        /^[[:space:]]*#/ { next }
+        /^[^[:space:]]/ { insec = ($0 ~ /^static_host_map:[[:space:]]*$/); key=""; next }
+        !insec { next }
+        {
+            line = $0
+            if (line ~ /^[[:space:]]*"?[0-9A-Fa-f:.]+"?[[:space:]]*:/) {
+                key = line
+                sub(/^[[:space:]]*"/, "", key); sub(/".*/, "", key)
+                sub(/[[:space:]]*:.*/, "", key)
+                val = line; sub(/^[^:]*:[[:space:]]*/, "", val)
+                sub(/[[:space:]]*#.*$/, "", val)
+                gsub(/\[|\]/, "", val)
+                n = split(val, a, ",")
+                for (i=1; i<=n; i++) {
+                    v = a[i]
+                    gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
+                    gsub(/"/, "", v)
+                    if (v != "") print key "\t" v
+                }
+                next
+            }
+            if (key != "" && line ~ /^[[:space:]]*-[[:space:]]*/) {
+                v = line; sub(/^[[:space:]]*-[[:space:]]*/, "", v)
+                sub(/[[:space:]]*#.*$/, "", v)
+                gsub(/\"/, "", v)
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
+                if (v != "") print key "\t" v
+            }
+        }' "$1" 2>/dev/null
+}
+
+# _pki_lh_hosts <file> -> one lighthouse overlay IP per line
+_pki_lh_hosts() {
+    awk '
+        { sub(/\r$/, "") }
+        /^[[:space:]]*#/ { next }
+        /^[^[:space:]]/ { inlh = ($0 ~ /^lighthouse:[[:space:]]*$/); inhosts=0; next }
+        !inlh { next }
+        /^[[:space:]]*hosts:[[:space:]]*\[/ {
+            line = $0; sub(/.*\[/, "", line); sub(/\].*/, "", line)
+            n = split(line, a, ",")
+            for (i=1; i<=n; i++) {
+                v = a[i]; gsub(/"/, "", v)
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
+                if (v != "") print v
+            }
+            inhosts=0; next
+        }
+        /^[[:space:]]*hosts:[[:space:]]*$/ { inhosts=1; next }
+        /^[[:space:]]*[A-Za-z_]+[[:space:]]*:/ { inhosts=0 }
+        inhosts && /^[[:space:]]*-[[:space:]]*/ {
+            v = $0; sub(/^[[:space:]]*-[[:space:]]*/, "", v)
+            sub(/[[:space:]]*#.*$/, "", v)
+            gsub(/\"/, "", v)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
+            if (v != "") print v
+        }' "$1" 2>/dev/null
+}
+
+_pki_add_lh_ip() {
+    local ip="$1" e
+    [[ -n "$ip" ]] || return 0
+    for e in "${PKI_NET_LH_IPS[@]}"; do [[ "$e" == "$ip" ]] && return 0; done
+    PKI_NET_LH_IPS+=("$ip")
+}
+
+_pki_add_static() {
+    local ip="$1" ep="$2" e
+    [[ -n "$ip" && -n "$ep" ]] || return 0
+    for e in "${PKI_NET_STATIC[@]}"; do [[ "$e" == "$ip $ep" ]] && return 0; done
+    PKI_NET_STATIC+=("$ip $ep")
+}
+
+_pki_static_for_ip() {
+    local ip="$1" e
+    for e in "${PKI_NET_STATIC[@]}"; do
+        [[ "${e%% *}" == "$ip" ]] && { printf '%s' "${e#* }"; return 0; }
+    done
+    return 1
+}
+
+# _pki_firewall_block <file> -> the verbatim top-level firewall: block
+_pki_firewall_block() {
+    awk '
+        { sub(/\r$/, "") }
+        /^firewall:[[:space:]]*$/ { infw=1; print; next }
+        infw {
+            if ($0 ~ /^[^[:space:]]/) exit
+            print
+        }' "$1" 2>/dev/null
+}
+
+# Candidate Nebula configs, most specific first. Never writes; unreadable files
+# are handled by readable_nebula_config (cached sudo or a reasoned prompt).
+_pki_local_config_candidates() {
+    local conf n d sv en ro ho
+    [[ -n "${NEBULA_LOCAL_CONFIG:-}" ]] && printf '%s\n' "${NEBULA_LOCAL_CONFIG/#\~/$HOME}"
+    # Scripts/tests can disable automatic discovery (the explicit override above
+    # is still honoured).
+    [[ "${NEBULA_NO_LOCAL_CONFIG:-0}" == 1 ]] && return 0
+    [[ -n "${NEBULA_DIR:-}" ]] && printf '%s\n' "${NEBULA_DIR%/}/config.yml"
+    conf="$(resolve_server_conf)"
+    if [[ -f "$conf" ]]; then
+        while IFS='|' read -r n d sv en ro ho; do
+            [[ -n "$d" ]] && printf '%s\n' "${d%/}/config.yml"
+        done < <(SERVER_CONF="$conf" server_entries 2>/dev/null || true)
+    fi
+    printf '%s\n' "/etc/nebula/config.yml"
+}
+
+# [server.*] entries from the manager config (name|dir|service|enabled|role|host).
+_pki_server_entries() {
+    local conf; conf="$(resolve_server_conf)"
+    [[ -f "$conf" ]] || return 0
+    SERVER_CONF="$conf" server_entries 2>/dev/null || true
+}
+
+# _pki_cert_path_for_name <name> <cert_dir> -> certificate path
+# Exact match first, then a '<name>.<domain>' prefix, then a unique substring.
+_pki_cert_path_for_name() {
+    local name="$1" dir="$2" cert base
+    [[ -n "$name" && -d "$dir" ]] || return 0
+    local -a exact=() pref=() subs=()
+    for cert in "$dir"/*.crt; do
+        [[ -f "$cert" ]] || continue
+        base="$(basename "$cert" .crt)"
+        [[ "$base" == "ca" ]] && continue
+        if [[ "$base" == "$name" ]]; then exact+=("$cert")
+        elif [[ "$base" == "$name".* ]]; then pref+=("$cert")
+        elif [[ "${base,,}" == *"${name,,}"* ]]; then subs+=("$cert")
+        fi
+    done
+    if (( ${#exact[@]} == 1 )); then printf '%s\n' "${exact[0]}"
+    elif (( ${#pref[@]} == 1 )); then printf '%s\n' "${pref[0]}"
+    elif (( ${#subs[@]} == 1 )); then printf '%s\n' "${subs[0]}"
+    fi
+}
+
+# _pki_cert_ip_for_name <name> <cert_dir> -> first overlay IP (no prefix)
+_pki_cert_ip_for_name() {
+    local name="$1" dir="$2" cert nc json ip isca
+    cert="$(_pki_cert_path_for_name "$name" "$dir")"
+    [[ -n "$cert" ]] || return 0
+    nc="${NEBULA_BIN_PATH:-/usr/local/bin}/nebula-cert"
+    [[ -x "$nc" ]] || nc="$(command -v nebula-cert 2>/dev/null || true)"
+    [[ -n "$nc" ]] || return 0
+    json="$(nebula_cert_json "$(dirname "$nc")" "$cert")"
+    isca="$(jq -r '.details.isCa // false' <<<"$json" 2>/dev/null)"
+    [[ "$isca" == "true" ]] && return 0
+    ip="$(jq -r '.details.ips[0] // empty' <<<"$json" 2>/dev/null)"
+    ip="${ip%%/*}"
+    [[ -n "$ip" ]] && printf '%s\n' "$ip"
+}
+
+# Add the default port unless the value already looks like host:port.
+_pki_endpoint_with_port() {
+    local host="$1" port="${2:-${NEBULA_DEFAULT_PORT:-4242}}"
+    [[ -n "$host" ]] || return 0
+    if [[ "$host" =~ ^[^:]+:[0-9]+$ || "$host" =~ ^\[[^]]+\]:[0-9]+$ ]]; then
+        printf '%s' "$host"
+    else
+        printf '%s:%s' "$host" "$port"
+    fi
+}
+
+# pki_detect_network_config [cert_dir]
+# Populates PKI_NET_* for pki_write_client_config. Prefers the local Nebula
+# config (authoritative), then derives missing lighthouses/endpoints from the
+# [server.*] entries + the certificate workspace. Never fails hard; records
+# anything it cannot determine in PKI_NET_MISSING so the caller can flag it.
+PKI_NET_READY=0
+PKI_NET_CERT_DIR=""
+PKI_NET_SOURCE=""
+PKI_NET_TUN="nebula1"
+PKI_NET_LISTEN_PORT=""
+PKI_NET_INTERVAL=""
+PKI_NET_AM_LH="false"
+PKI_NET_PUNCH="true"
+PKI_NET_RESPOND="true"
+PKI_NET_DELAY="1s"
+PKI_NET_LH_IPS=()
+PKI_NET_STATIC=()
+PKI_NET_FIREWALL=()
+PKI_NET_MISSING=()
+
+pki_detect_network_config() {
+    local cert_dir="${1:-$(resolve_cert_dir)}"
+    # No cross-call cache: the local config, [server.*] entries or the cert
+    # workspace may change between bundles. Re-detection is cheap, and sudo
+    # credentials stay cached for the unavoidable privileged config read.
+    PKI_NET_CERT_DIR="$cert_dir"
+    PKI_NET_SOURCE=""
+    PKI_NET_TUN="nebula1"
+    PKI_NET_LISTEN_PORT=""
+    PKI_NET_INTERVAL=""
+    PKI_NET_AM_LH="false"
+    PKI_NET_PUNCH="true"
+    PKI_NET_RESPOND="true"
+    PKI_NET_DELAY="1s"
+    PKI_NET_LH_IPS=()
+    PKI_NET_STATIC=()
+    PKI_NET_FIREWALL=()
+    PKI_NET_MISSING=()
+
+    # 1) Local Nebula config (read-only; may use cached sudo or ask once).
+    local cand r src="" cfg=""
+    while IFS= read -r cand; do
+        [[ -n "$cand" && -f "$cand" ]] || continue
+        r="$(readable_nebula_config "$cand")" || r=""
+        if [[ -n "$r" ]]; then cfg="$r"; src="$cand"; break; fi
+    done < <(_pki_local_config_candidates)
+    if [[ -n "$cfg" ]]; then
+        PKI_NET_SOURCE="$src"
+        local v ip ep line last
+        v="$(_pki_cfg_scalar "$cfg" tun dev)";              [[ -n "$v" ]] && PKI_NET_TUN="$v"
+        v="$(_pki_cfg_scalar "$cfg" listen port)";          [[ -n "$v" ]] && PKI_NET_LISTEN_PORT="$v"
+        v="$(_pki_cfg_scalar "$cfg" lighthouse am_lighthouse)"; [[ -n "$v" ]] && PKI_NET_AM_LH="$v"
+        v="$(_pki_cfg_scalar "$cfg" lighthouse interval)";  [[ -n "$v" ]] && PKI_NET_INTERVAL="$v"
+        v="$(_pki_cfg_scalar "$cfg" punchy punch)";         [[ -n "$v" ]] && PKI_NET_PUNCH="$v"
+        v="$(_pki_cfg_scalar "$cfg" punchy respond)";       [[ -n "$v" ]] && PKI_NET_RESPOND="$v"
+        v="$(_pki_cfg_scalar "$cfg" punchy delay)";         [[ -n "$v" ]] && PKI_NET_DELAY="$v"
+        while IFS=$'\t' read -r ip ep; do _pki_add_static "$ip" "$ep"; done < <(_pki_static_hosts "$cfg")
+        while IFS= read -r ip; do _pki_add_lh_ip "$ip"; done < <(_pki_lh_hosts "$cfg")
+        while IFS= read -r line; do PKI_NET_FIREWALL+=("$line"); done < <(_pki_firewall_block "$cfg")
+        # Drop trailing blank lines so the rendered template stays tidy.
+        last=$(( ${#PKI_NET_FIREWALL[@]} - 1 ))
+        while (( last >= 0 )) && [[ -z "${PKI_NET_FIREWALL[last]}" ]]; do
+            unset "PKI_NET_FIREWALL[$last]"
+            last=$(( last - 1 ))
+        done
+        [[ "$cfg" != "$src" ]] && rm -f "$cfg"
+    fi
+
+    # 2) [server.*] entries. If the local config already named the lighthouses,
+    # treat them as authoritative and only use these entries to fill a missing
+    # public endpoint. Otherwise derive the lighthouses from the entries.
+    local n d sv en ro ho role_lc entry have_local_lh=0 known l
+    (( ${#PKI_NET_LH_IPS[@]} )) && have_local_lh=1
+    local -a entries=()
+    while IFS= read -r entry; do [[ -n "$entry" ]] && entries+=("$entry"); done < <(_pki_server_entries)
+    for entry in "${entries[@]}"; do
+        IFS='|' read -r n d sv en ro ho <<<"$entry"
+        [[ -n "$n" ]] || continue
+        [[ "${en:-true}" == "false" ]] && continue
+        role_lc="${ro,,}"
+        if [[ "$role_lc" == *lighthouse* || ( -z "$ro" && -n "$ho" ) ]]; then
+            local cip; cip="$(_pki_cert_ip_for_name "$n" "$cert_dir")"
+            if [[ -z "$cip" ]]; then
+                (( have_local_lh )) || \
+                    PKI_NET_MISSING+=("overlay IP for lighthouse '$n' (no matching certificate in $cert_dir)")
+                continue
+            fi
+            if (( have_local_lh )); then
+                known=0
+                for l in "${PKI_NET_LH_IPS[@]}"; do [[ "$l" == "$cip" ]] && { known=1; break; }; done
+                (( known )) || continue
+            else
+                _pki_add_lh_ip "$cip"
+            fi
+            if [[ -z "$(_pki_static_for_ip "$cip")" && -n "$ho" ]]; then
+                _pki_add_static "$cip" "$(_pki_endpoint_with_port "$ho")"
+            fi
+        fi
+    done
+
+    # 3) Every lighthouse needs a public endpoint; flag the ones without one.
+    local lh
+    for lh in "${PKI_NET_LH_IPS[@]}"; do
+        [[ -n "$(_pki_static_for_ip "$lh")" ]] && continue
+        PKI_NET_MISSING+=("static_host_map entry for lighthouse $lh (set host= in [server.*] or in the local config)")
+    done
+    if (( ${#PKI_NET_LH_IPS[@]} == 0 )); then
+        if [[ -n "$PKI_NET_SOURCE" ]]; then
+            PKI_NET_MISSING+=("lighthouse overlay IP (none listed in $PKI_NET_SOURCE)")
+        else
+            PKI_NET_MISSING+=("lighthouse overlay IP (no readable local config and no lighthouse [server.*] entry)")
+        fi
+    fi
+
+    [[ -z "$PKI_NET_INTERVAL" ]] && PKI_NET_INTERVAL="60"
+    [[ -z "$PKI_NET_LISTEN_PORT" ]] && PKI_NET_LISTEN_PORT="0"
+    PKI_NET_READY=1
+    debug_info "client config: source=${PKI_NET_SOURCE:-[server.*]/defaults} lighthouses=${PKI_NET_LH_IPS[*]:-none} missing=${#PKI_NET_MISSING[@]}"
+}
+
+# Is this certificate a lighthouse? Checks its groups, then [server.*] role.
+pki_cert_is_lighthouse() {
+    local name="$1" cert_dir="$2" cert nc json groups n d sv en ro ho
+    cert="$(_pki_cert_path_for_name "$name" "$cert_dir")"
+    if [[ -n "$cert" ]]; then
+        nc="${NEBULA_BIN_PATH:-/usr/local/bin}/nebula-cert"
+        [[ -x "$nc" ]] || nc="$(command -v nebula-cert 2>/dev/null || true)"
+        if [[ -n "$nc" ]]; then
+            json="$(nebula_cert_json "$(dirname "$nc")" "$cert")"
+            groups="$(jq -r '.details.groups | join(",")' <<<"$json" 2>/dev/null)"
+            [[ ",${groups,,}," == *",lighthouse,"* ]] && return 0
+        fi
+    fi
+    while IFS='|' read -r n d sv en ro ho; do
+        [[ -n "$n" ]] || continue
+        if [[ "$n" == "$name" || "$name" == "$n".* ]] && [[ "${ro,,}" == *lighthouse* ]]; then
+            return 0
+        fi
+    done < <(_pki_server_entries)
+    return 1
+}
+
+# Write a ready-to-use Nebula config for a client bundle. Network settings are
+# detected (local config -> [server.*] + certs) instead of leaving placeholders;
+# anything undetermined is flagged in the comments and on stderr.
 pki_write_client_config() {
-    local outfile="$1" name="$2"
-    cat > "$outfile" <<EOF
-# Nebula client configuration for '$name'
-# Generated by nebula-manager. Adjust static_host_map / lighthouse.hosts
-# for your network, then place the referenced files on the client.
-pki:
-  ca: /etc/nebula/ca.crt
-  cert: /etc/nebula/$name.crt
-  key: /etc/nebula/$name.key
+    local outfile="$1" name="$2" cert_dir="${3:-$(resolve_cert_dir)}"
+    pki_detect_network_config "$cert_dir"
 
-static_host_map:
-  # "10.42.0.1": ["203.0.113.10:4242"]
+    local is_lh=0 am_lh="false"
+    pki_cert_is_lighthouse "$name" "$cert_dir" && { is_lh=1; am_lh="true"; }
+    local interval="${PKI_NET_INTERVAL:-60}"
+    local port="${PKI_NET_LISTEN_PORT:-0}"
+    if (( is_lh )) && [[ "$port" == "0" || -z "$port" ]]; then
+        port="${NEBULA_DEFAULT_PORT:-4242}"
+    fi
+    local tun="${PKI_NET_TUN:-nebula1}"
 
-lighthouse:
-  am_lighthouse: false
-  interval: 60
-  hosts:
-    # - "10.42.0.1"
+    if [[ -n "$PKI_NET_SOURCE" ]]; then
+        log_info "Client config: network settings from $PKI_NET_SOURCE"
+    fi
+    if (( ${#PKI_NET_MISSING[@]} )); then
+        log_warn "Generated client config is incomplete - could not determine:"
+        local m
+        for m in "${PKI_NET_MISSING[@]}"; do log_warn "  - $m"; done
+        log_warn "Review config.yml.template in the bundle before installing it."
+    fi
 
-listen:
-  host: 0.0.0.0
-  port: 4242
+    {
+        printf '# Nebula client configuration for %s\n' "'$name'"
+        printf '# Generated by nebula-manager'
+        [[ -n "$PKI_NET_SOURCE" ]] && printf ' (network settings from %s)' "$PKI_NET_SOURCE"
+        printf '.\n'
+        if (( ${#PKI_NET_MISSING[@]} )); then
+            printf '#\n# WARNING: incomplete - review the commented sections below:\n'
+            local m
+            for m in "${PKI_NET_MISSING[@]}"; do printf '#   - %s\n' "$m"; done
+        fi
+        printf '\npki:\n  ca: /etc/nebula/ca.crt\n  cert: /etc/nebula/%s.crt\n  key: /etc/nebula/%s.key\n\n' "$name" "$name"
 
-punchy:
-  punch: true
+        if (( ${#PKI_NET_STATIC[@]} )); then
+            printf 'static_host_map:\n'
+            local entry ip ep
+            for entry in "${PKI_NET_STATIC[@]}"; do
+                ip="${entry%% *}"; ep="${entry#* }"
+                printf '  "%s": ["%s"]\n' "$ip" "$ep"
+            done
+        else
+            printf '# WARNING: could not determine a lighthouse endpoint.\n'
+            printf '# static_host_map:\n#   "10.42.0.1": ["203.0.113.10:4242"]\n'
+        fi
 
-tun:
-  dev: nebula1
-EOF
+        if (( ${#PKI_NET_LH_IPS[@]} )); then
+            printf '\nlighthouse:\n  am_lighthouse: %s\n  interval: %s\n  hosts:\n' "$am_lh" "$interval"
+            local lh
+            for lh in "${PKI_NET_LH_IPS[@]}"; do printf '    - "%s"\n' "$lh"; done
+        else
+            printf '\n# WARNING: could not determine the lighthouse overlay IP.\n'
+            printf '# lighthouse:\n#   am_lighthouse: false\n#   interval: 60\n#   hosts:\n#     - "10.42.0.1"\n'
+        fi
+
+        printf '\nlisten:\n  host: 0.0.0.0\n  port: %s\n' "$port"
+        printf '\npunchy:\n  punch: %s\n  respond: %s\n  delay: %s\n' \
+            "${PKI_NET_PUNCH:-true}" "${PKI_NET_RESPOND:-true}" "${PKI_NET_DELAY:-1s}"
+
+        if (( ${#PKI_NET_FIREWALL[@]} )); then
+            local fl
+            printf '\n'
+            for fl in "${PKI_NET_FIREWALL[@]}"; do printf '%s\n' "$fl"; done
+        else
+            printf '\n# Nebula denies all traffic by default when firewall: is omitted.\n'
+            printf '# This bundle is permissive so it works out of the box - tighten it.\n'
+            printf 'firewall:\n  outbound:\n    - port: any\n      proto: any\n      host: any\n'
+            printf '  inbound:\n    - port: any\n      proto: any\n      host: any\n'
+        fi
+
+        printf '\ntun:\n  dev: %s\n' "$tun"
+    } > "$outfile"
 }
 
 # Default place to write exported client bundles. In order of preference:
@@ -1070,7 +1446,7 @@ pki_bundle_client_zip() {
     cp "$crt" "$tmp/$name.crt"
     cp "$key" "$tmp/$name.key"
     cp "$ca"  "$tmp/ca.crt"
-    pki_write_client_config "$tmp/config.yml.template" "$name"
+    pki_write_client_config "$tmp/config.yml.template" "$name" "$cert_dir"
 
     local zipfile="$out_dir/${name}-nebula-bundle.zip"
     rm -f "$zipfile"

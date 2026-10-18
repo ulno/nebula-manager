@@ -314,6 +314,7 @@ Global options:
   --ui <backend>        UI backend: auto|plain|whiptail|dialog (auto = plain menus)
   --debug <levels>      Debug mode: warn|log|info|learn|all (comma-separated)
                         learn prints every Nebula CLI command before running it
+  -l, --learn           Shorthand for --debug=learn
   --no-color            Disable colored output
   -v, --version         Print version
   -h, --help            Show this help
@@ -341,6 +342,8 @@ Commands:
 Environment:
   NEBULA_KEYS_DIR      Certificate workspace (2nd precedence, after --cert-dir)
   NEBULA_BUNDLE_DIR    Default directory for exported client bundles
+  NEBULA_LOCAL_CONFIG  Nebula config.yml used to populate client bundles
+  NEBULA_NO_LOCAL_CONFIG  Set to 1 to skip auto-detecting that config
   NEBULA_MANAGER_LIB   Override the lib/ directory location
   NEBULA_MANAGER_CONF  Path to nebula-manager.conf (alias for --config)
   NEBULA_MANAGER_REPO  owner/repo to use for update checks (default: git origin)
@@ -381,6 +384,7 @@ parse_global_flags() {
             --ui)           shift; NEBULA_UI="${1:-}" ;;
             --debug=*)      DEBUG="${1#*=}" ;;
             --debug)        shift; DEBUG="${1:-all}" ;;
+            --learn|-l)     DEBUG=learn ;;
             --no-color)     USE_COLOR=false ;;
             --auto-update-nebula) REMAINING_ARGS+=("auto-update") ;;
             *)              REMAINING_ARGS+=("$1") ;;

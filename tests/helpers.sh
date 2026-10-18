@@ -64,6 +64,9 @@ MOCK
     export USE_COLOR=false USE_ICONS=false NEBULA_UI=plain
     # Never inherit a developer's DEBUG setting.
     unset DEBUG 2>/dev/null || true
+    # Keep tests deterministic: never auto-read the host's Nebula config (an
+    # explicit NEBULA_LOCAL_CONFIG is still honoured).
+    export NEBULA_NO_LOCAL_CONFIG=1
 
     # Point NEBULA_BIN_PATH at a real nebula-cert if we can find one.
     local cert_bin

@@ -122,4 +122,11 @@ assert_not_contains "--debug=learn: no debug on stdout" "$out" "[debug]"
 out="$(DEBUG=learn "$NM" paths 2>"$ERR")"
 assert_contains "DEBUG=learn env: details on stderr" "$(cat "$ERR")" "[debug]"
 
+out="$(DEBUG= "$NM" --learn paths 2>"$ERR")"
+assert_contains "--learn selects the learn level" "$out" "debug:     learn"
+assert_contains "--learn includes info details" "$(cat "$ERR")" "[debug]"
+
+out="$(DEBUG= "$NM" -l paths 2>"$ERR")"
+assert_contains "-l selects the learn level" "$out" "debug:     learn"
+
 harness_summary
