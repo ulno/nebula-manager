@@ -2396,9 +2396,18 @@ dns_status() {
     if [[ "$role" == lighthouse ]]; then
         printf 'serve_dns:    %s\n' "$(grep -qE '^[[:space:]]*serve_dns:[[:space:]]*true' "$cfg" && echo enabled || echo disabled)"
     elif command -v resolvectl >/dev/null 2>&1; then
-        printf 'resolvectl:\n'
-        resolvectl dns "$iface" 2>/dev/null | sed 's/^/  /'
-        resolvectl domain "$iface" 2>/dev/null | sed 's/^/  /'
+        local dns_list domain_list hook
+        dns_list="$(resolvectl dns "$iface" 2>/dev/null | sed -n 's/^[[:space:]]*Link[^:]*:[[:space:]]*//p' | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+        domain_list="$(resolvectl domain "$iface" 2>/dev/null | sed -n 's/^[[:space:]]*Link[^:]*:[[:space:]]*//p' | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+        printf 'Resolver DNS: %s\n' "${dns_list:-<not configured>}"
+        printf 'DNS suffix:   %s\n' "${domain_list:-<not configured>}"
+        if command -v systemctl >/dev/null 2>&1 && systemctl cat nebula-manager-resolved.service >/dev/null 2>&1; then
+            hook="installed"
+            systemctl is-enabled --quiet nebula-manager-resolved.service 2>/dev/null && hook="installed (enabled)"
+        else
+            hook="not installed"
+        fi
+        printf 'Boot hook:    %s\n' "$hook"
     else
         printf 'resolvectl:   not installed\n'
     fi
@@ -2487,7 +2496,10 @@ _dns_install_resolved_unit() {
 }
 
 # Client: point systemd-resolved at the lighthouse for the mesh DNS suffix.
+# --persist installs the boot hook without asking.
 configure_client_dns() {
+    local persist=0
+    [[ "${1:-}" == "--persist" ]] && persist=1
     local source; source="$(_dns_config_source)"
     [[ -f "$source" ]] || { log_error "Nebula config not found: $source"; return 1; }
     local cfg; cfg="$(readable_nebula_config "$source")" || {
@@ -2530,7 +2542,9 @@ configure_client_dns() {
     log_success "Name resolution: '$domain' -> ${lh[*]} via $iface."
     log_info "The lighthouse can only answer for hosts it has seen since it started."
 
-    if [[ -t 0 && "${NEBULA_NO_PROMPT:-0}" != 1 ]]; then
+    if (( persist )); then
+        _dns_install_resolved_unit "$iface" "$domain" "${lh[@]}"
+    elif [[ -t 0 && "${NEBULA_NO_PROMPT:-0}" != 1 ]]; then
         if ui_yesno "Persist DNS" "Install a small systemd unit to reapply this on boot?"; then
             _dns_install_resolved_unit "$iface" "$domain" "${lh[@]}"
         fi
@@ -2546,14 +2560,23 @@ manage_name_resolution() {
     role="$(_dns_role "$r")"
     [[ "$r" != "$source" ]] && rm -f "$r"
     echo
+    local choice
     if [[ "$role" == lighthouse ]]; then
-        if ui_yesno "Name resolution" "Enable the lighthouse DNS server (serve_dns + firewall UDP/53) now?"; then
-            configure_lighthouse_dns
-        fi
+        choice="$(ui_menu "Name resolution" "Lighthouse DNS actions" \
+            "enable" "Enable serve_dns + firewall UDP/53" \
+            "back" "Back") " || return 0
+        case "$choice" in
+            enable) configure_lighthouse_dns ;;
+        esac
     else
-        if ui_yesno "Name resolution" "Point this client's resolver at the lighthouse DNS now?"; then
-            configure_client_dns
-        fi
+        choice="$(ui_menu "Name resolution" "Client DNS actions" \
+            "apply" "Apply now (until reboot)" \
+            "persist" "Apply now + install boot hook (recommended)" \
+            "back" "Back") " || return 0
+        case "$choice" in
+            apply)   configure_client_dns ;;
+            persist) configure_client_dns --persist ;;
+        esac
     fi
 }
 
@@ -2562,7 +2585,10 @@ dns_cli() {
     case "$sub" in
         status) dns_status ;;
         setup|enable|configure) manage_name_resolution ;;
-        *) log_error "Unknown 'dns' subcommand: $sub (status|setup)"; return 2 ;;
+        apply) configure_client_dns ;;
+        persist) configure_client_dns --persist ;;
+        lighthouse) configure_lighthouse_dns ;;
+        *) log_error "Unknown 'dns' subcommand: $sub (status|setup|apply|persist|lighthouse)"; return 2 ;;
     esac
 }
 

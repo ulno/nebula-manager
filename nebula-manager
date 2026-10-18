@@ -335,7 +335,9 @@ Commands:
                                   Default output: current dir, else ~/Downloads
   bench server|client [...]       iperf3 benchmarks
   diag                            Diagnostics (TUN IP, UDP socket, cert expiry)
-  dns status|setup                Nebula DNS: lighthouse serve_dns / client resolver
+  dns status|setup|apply|persist|lighthouse
+                                  Nebula DNS: status, interactive setup, apply now,
+                                  apply + boot hook, or enable on a lighthouse
   config path|init|refresh|edit|remove   Manage nebula-manager.conf (offline template)
   server add|list|remove|...      Manage [server.*] entries in nebula-manager.conf
   import [--dry-run] [--yes]      Detect a running Nebula and generate nebula-manager.conf

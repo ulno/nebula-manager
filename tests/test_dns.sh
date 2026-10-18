@@ -15,7 +15,16 @@ fi
 # A fake resolvectl so command -v succeeds; elevate() logs the sudo command.
 cat > "$SANDBOX/bin/resolvectl" <<'MOCK'
 #!/usr/bin/env bash
-echo "fake resolvectl $*"
+if [[ "${FAKE_RESOLVE_CONFIG:-0}" == 1 ]]; then
+    case "${1:-}" in
+        dns)    echo "Link 7 (lo): 10.100.0.1" ;;
+        domain) echo "Link 7 (lo): ~theprof.mesh" ;;
+    esac
+else
+    case "${1:-}" in
+        dns|domain) echo "Link 7 (lo):" ;;
+    esac
+fi
 MOCK
 chmod +x "$SANDBOX/bin/resolvectl"
 
@@ -60,6 +69,13 @@ out="$(NEBULA_DIR="$CLIENT" dns_status 2>&1)"
 assert_contains "status shows the role" "$out" "Role:         client"
 assert_contains "status shows the lighthouse" "$out" "Lighthouse:   10.100.0.1"
 assert_contains "status shows the DNS suffix" "$out" "Mesh domain:  theprof.mesh"
+assert_contains "status flags an unconfigured resolver" "$out" "Resolver DNS: <not configured>"
+assert_contains "status flags an unconfigured suffix" "$out" "DNS suffix:   <not configured>"
+assert_contains "status shows the boot hook" "$out" "Boot hook:    not installed"
+
+out="$(FAKE_RESOLVE_CONFIG=1 NEBULA_DIR="$CLIENT" dns_status 2>&1)"
+assert_contains "status shows configured DNS" "$out" "Resolver DNS: 10.100.0.1"
+assert_contains "status shows configured suffix" "$out" "DNS suffix:   ~theprof.mesh"
 
 : > "$SUDO_LOG"
 out="$(NEBULA_DIR="$CLIENT" configure_client_dns 2>&1)"; rc=$?
@@ -67,6 +83,13 @@ assert_eq "client DNS setup succeeds" "$rc" "0"
 assert_contains "client DNS points resolvectl at the lighthouse" "$(cat "$SUDO_LOG")" "resolvectl dns lo 10.100.0.1"
 assert_contains "client DNS routes the mesh suffix" "$(cat "$SUDO_LOG")" "resolvectl domain lo ~theprof.mesh"
 assert_contains "client DNS reports success" "$out" "Name resolution: 'theprof.mesh'"
+
+# apply + persist installs the boot hook through the elevate path
+: > "$SUDO_LOG"
+out="$(NEBULA_NO_PROMPT=1 NEBULA_DIR="$CLIENT" configure_client_dns --persist 2>&1)"; rc=$?
+assert_eq "client DNS persist succeeds" "$rc" "0"
+assert_contains "persist installs the resolver unit" "$(cat "$SUDO_LOG")" "nebula-manager-resolved.service"
+assert_contains "persist enables the resolver unit" "$(cat "$SUDO_LOG")" "systemctl enable --now"
 
 # --- lighthouse setup -------------------------------------------------------
 LH="$SANDBOX/lh"
