@@ -247,6 +247,28 @@ value it still cannot determine is left commented out, listed at the top of the
 file, and reported as a warning — so a bundle never silently ships a config with
 missing lighthouses.
 
+### Importing a bundle on the client
+
+**Setup ▸ Import client bundle (.zip/.tar.gz)** opens a file browser, extracts
+the archive safely, validates `ca.crt` plus the matching `<name>.crt`/`<name>.key`,
+and installs them together with the bundled `config.yml.template` (renamed to
+`config.yml`, with `/etc/nebula` rewritten if you choose another target).
+Existing files are backed up with a timestamp; an existing `config.yml` is never
+replaced without confirmation or `--force`. It then creates/updates
+`nebula-manager.conf` (`[server.<name>]`, `dir=<target>`, `role=client`) and
+reloads straight into the main menu.
+
+Headless equivalent:
+
+```bash
+./nebula-manager import --bundle ~/Downloads/client-nebula-bundle.zip --yes
+./nebula-manager import --bundle bundle.tar.gz --dir /srv/nebula --yes --force
+./nebula-manager import --bundle bundle.zip --dry-run   # inspect, write nothing
+```
+
+Only the writes are elevated (via the usual reasoned sudo prompt); extraction and
+validation happen as your normal user.
+
 ### Resolution precedence
 
 1. `--cert-dir <path>` (CLI flag — highest priority)
@@ -300,7 +322,7 @@ headless subcommands for scripting — see *Expert / scriptable* below.
 
 | Menu | What you can do |
 |---|---|
-| **Setup** | shows the **detected state** (config, Nebula service, cert workspace), then: import/update, create, browse, edit, delete `nebula-manager.conf`, manage servers, pick the certificate workspace |
+| **Setup** | shows the **detected state** (config, Nebula service, cert workspace), then: import/update from this host, **import a client bundle (.zip/.tar.gz)**, create, browse, edit, delete `nebula-manager.conf`, manage servers, pick the certificate workspace |
 | **Servers** | list / add / enable-disable / remove `[server.*]` entries |
 | **Certificates** | list, create CA, sign, view, expiry, **bundle/export** (pick from a list), revoke, switch workspace |
 | **Configuration** | validate / edit Nebula `config.yml` (service-owned files are edited on a working copy and saved once with a timestamped backup), edit firewall rules |
@@ -311,7 +333,8 @@ headless subcommands for scripting — see *Expert / scriptable* below.
 
 **First run** (no config yet) opens the **Setup** menu, which shows what was
 detected on this host and lets you *Import / update from this host* (adopt a
-running Nebula), *Create config from template*, or *Browse for a config file* —
+running Nebula), *Import client bundle* (install a `.zip`/`.tar.gz` produced by
+`cert bundle`), *Create config from template*, or *Browse for a config file* —
 then *Manage servers* to add your servers and *Reload & continue* to enter the
 main menu.
 
@@ -326,6 +349,8 @@ file/directory browsing automatically uses `whiptail` when it is installed.
 ./nebula-manager import                 # detect running Nebula -> propose nebula-manager.conf
 ./nebula-manager import --dry-run       # just show what was detected / proposed
 ./nebula-manager import --yes           # write it non-interactively
+./nebula-manager import --bundle ~/Downloads/client-nebula-bundle.zip --yes
+./nebula-manager import --bundle bundle.tar.gz --dir /srv/nebula --yes --force
 ./nebula-manager server add vps --dir /etc/nebula --service nebula.service --role lighthouse --host vps.theprof.demo:4545
 ./nebula-manager server list
 ./nebula-manager server disable lab
@@ -604,6 +629,7 @@ What it covers:
 | `tests/test_bundle.sh` | client export: candidate listing, substring/ambiguous matching, default output dir, TUI picker, mode 0600 |
 | `tests/test_client_config.sh` | generated client template: real static_host_map/lighthouse/punchy/listen/tun/firewall from the local config, `[server.*]` fallback, and missing-value warnings |
 | `tests/test_edit.sh` | privileged-safe config editing: working copy for read-only/unreadable configs, elevated write-back, timestamped backup, and no-op when nothing changed |
+| `tests/test_import_bundle.sh` | client bundle import: tar.gz extraction, validation, path rebasing, manager.conf creation, overwrite/backup, dry-run, TUI wrapper, CLI |
 | `tests/pki.bats` | BATS mirror of the core unprivileged-PKI guarantees |
 
 Requirements: `bash`, `nebula-cert` (for PKI tests; auto-skipped otherwise).

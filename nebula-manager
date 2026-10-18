@@ -203,6 +203,7 @@ _setup_menu_build() {
     local bootstrap="${1:-0}"
     _SETUP_OPTS=(
         "$(get_icon 'download')Import / update from this host"
+        "$(get_icon 'upload')Import client bundle (.zip/.tar.gz)"
         "$(get_icon 'create')Create config from template"
         "$(get_icon 'inspect')Browse for a config file"
         "$(get_icon 'edit')Edit config"
@@ -213,6 +214,7 @@ _setup_menu_build() {
     )
     _SETUP_FNS=(
         import_run
+        import_bundle_tui
         config_init_tui
         config_browse_tui
         config_edit_tui
@@ -284,8 +286,7 @@ tui_main() {
             top_header
             main_menu
         else
-            banner
-            log_info "No usable server selected - opening the setup menu (import, create or browse for a config)."
+            log_info "No usable server selected - opening Setup (import from this host, import a client bundle, create or browse for a config)."
             bootstrap_menu
         fi
         # 'Reload & continue' sets TUI_RESTART so the whole flow starts over with
@@ -335,6 +336,8 @@ Commands:
   config path|init|refresh|edit|remove   Manage nebula-manager.conf (offline template)
   server add|list|remove|...      Manage [server.*] entries in nebula-manager.conf
   import [--dry-run] [--yes]      Detect a running Nebula and generate nebula-manager.conf
+  import --bundle FILE [--dir DIR] [--yes] [--force]
+                                  Install a client bundle (.zip/.tar.gz/.tgz/.tar)
   ui                              Report the selected menu/browse UI backends
   paths                           Print resolved config, key & cache paths
   auto-update                     Update Nebula to the latest release

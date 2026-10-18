@@ -197,25 +197,45 @@ firewall:
       host: any
 ```
 
-On each new machine (✅ today, manual):
+On each new machine (✅ today): install Nebula first, then clone the tool and
+import the bundle from Setup:
 
 ```bash
+# install Nebula with your distro's package manager, e.g. on Ubuntu:
+sudo apt install -y nebula
 git clone https://github.com/<you>/nebula-manager    # brings ./nebula-manager + ./lib
 cd nebula-manager
-./nebula-manager config init                         # create the tool config
-./nebula-manager config edit                         # add [server.theprof3] with dir/service
-unzip ~/theprof3.theprof.mesh-nebula-bundle.zip -d ~/nb
-# install Nebula + place files (sudo only where needed):
-sudo install -d /etc/nebula
-sudo cp ~/nb/{ca.crt,theprof3.theprof.mesh.crt,theprof3.theprof.mesh.key} /etc/nebula/
-sudo cp ~/nb/config.yml.template /etc/nebula/config.yml   # then edit static_host_map + lighthouse.hosts
-./nebula-manager            # TUI -> Maintenance -> install/enable the service, then Toggle
+./nebula-manager            # Setup -> Import client bundle -> theprof3...zip
+```
+
+The import extracts safely, validates `ca.crt` + the client cert/key, installs
+them and the populated `config.yml` into `/etc/nebula` (elevating only for the
+writes, with backups), creates `nebula-manager.conf`, and reloads straight into
+the main menu. Then start the service and verify:
+
+```bash
+./nebula-manager            # Maintenance -> Toggle Nebula Service
 ./nebula-manager diag       # verify TUN ip, UDP socket, cert expiry
 ```
 
-⚙️ Planned convenience: `nebula-manager client-setup <bundle.zip>` that unpacks,
-places files under `/etc/nebula`, patches the unit's config path, enables the
-service, and runs `diag` — elevating only for the individual system steps.
+Headless equivalent:
+
+```bash
+./nebula-manager import --bundle ~/theprof3.theprof.mesh-nebula-bundle.zip --yes
+```
+
+<details><summary>Manual alternative (no import wizard)</summary>
+
+```bash
+./nebula-manager config init
+./nebula-manager config edit                         # add [server.theprof3] with dir/service
+unzip ~/theprof3.theprof.mesh-nebula-bundle.zip -d ~/nb
+sudo install -d /etc/nebula
+sudo cp ~/nb/{ca.crt,theprof3.theprof.mesh.crt,theprof3.theprof.mesh.key} /etc/nebula/
+sudo cp ~/nb/config.yml.template /etc/nebula/config.yml
+```
+
+</details>
 
 ### Phase 2b — Theprof's Android phone (✅ today, mobile app)
 
@@ -343,15 +363,17 @@ sudo chmod +x /usr/local/bin/yq
 
 git clone https://github.com/<you>/nebula-manager
 cd nebula-manager
-./nebula-manager config init
-./nebula-manager config edit               # [server.student-group-1] dir=/etc/nebula service=nebula.service
-unzip ~/bianca-nebula-bundle.zip -d ~/nb
-sudo install -d /etc/nebula
-sudo cp ~/nb/{ca.crt,bianca.*.crt,bianca.*.key,config.yml.template} /etc/nebula/
-sudo mv /etc/nebula/config.yml.template /etc/nebula/config.yml
-# edit /etc/nebula/config.yml: static_host_map + lighthouse.hosts
+./nebula-manager          # Setup -> Import client bundle -> bianca-nebula-bundle.zip
 ./nebula-manager          # Maintenance -> Toggle Nebula Service
 ./nebula-manager diag     # confirm 10.101.0.x/24 up, cert valid
+```
+
+The import wizard installs the cert/key/CA and the already-populated
+`config.yml` (real `static_host_map`/`lighthouse.hosts`) into `/etc/nebula`,
+creates `nebula-manager.conf`, and reloads into the main menu. Headless:
+
+```bash
+./nebula-manager import --bundle ~/bianca-nebula-bundle.zip --yes
 ```
 
 > **Fedora:** `sudo dnf install -y nebula ... yq ...` (`yq` is v4 there).

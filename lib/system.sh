@@ -1647,7 +1647,6 @@ _offer_edit_config() {
 # Function for server selection
 select_nebula_server() {
     if [[ ! -f "$SERVER_CONF" ]]; then
-        log_info "No configuration yet at $SERVER_CONF (use Setup / 'import')."
         return 1
     fi
 
@@ -1656,7 +1655,7 @@ select_nebula_server() {
     local conf_src conf_tmp=""
     if ! conf_src="$(readable_nebula_config "$SERVER_CONF")"; then
         log_error "Cannot read ${CYAN}$SERVER_CONF${RED} (permission denied)."
-        log_info "Re-run with sudo, or choose a readable nebula-manager.conf."
+        log_info "Approve the temporary sudo read when prompted, or choose a readable nebula-manager.conf."
         return 1
     fi
     [[ "$conf_src" != "$SERVER_CONF" ]] && conf_tmp="$conf_src"

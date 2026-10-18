@@ -226,7 +226,7 @@ import_write_conf() {
 
 # import_run [--dry-run] [--yes] [--force] [--from CONFIG] [--config OUT] [OUT]
 import_run() {
-    IMPORT_YES=0 IMPORT_FORCE=0 IMPORT_FROM=""
+    IMPORT_YES=0 IMPORT_FORCE=0 IMPORT_FROM="" IMPORT_BUNDLE="" IMPORT_DIR=""
     local dest="" dry=0
     while (($#)); do
         case "$1" in
@@ -234,12 +234,20 @@ import_run() {
             --yes|-y)     IMPORT_YES=1 ;;
             --force|-f)   IMPORT_FORCE=1 ;;
             --from)       shift; IMPORT_FROM="${1:-}" ;;
+            --bundle)     shift; IMPORT_BUNDLE="${1:-}" ;;
+            --dir)        shift; IMPORT_DIR="${1:-}" ;;
             --config)     shift; CONF_OVERRIDE="${1:-}" ;;
             *)            dest="$1" ;;
         esac
         shift
     done
     [[ -n "$dest" ]] && CONF_OVERRIDE="$dest"
+
+    if [[ -n "$IMPORT_BUNDLE" ]]; then
+        IMPORT_BUNDLE_DRY_RUN="$dry"
+        import_bundle_run "$IMPORT_BUNDLE" "${IMPORT_DIR:-/etc/nebula}"
+        return
+    fi
 
     import_detect "$IMPORT_FROM"
     if ! import_found; then
@@ -277,6 +285,271 @@ import_run() {
         [[ "$a" =~ ^[Nn] ]] && { log_info "Aborted."; return 1; }
     fi
     import_write_conf "$target"
+}
+
+###################################################################
+#################### Import a client bundle #######################
+###################################################################
+
+# Extract a bundle produced by `nebula-manager cert bundle` into <dest>.
+_bundle_extract() {
+    local archive="$1" dest="$2"
+    case "${archive,,}" in
+        *.zip)
+            if ! command -v unzip >/dev/null 2>&1; then
+                log_error "Cannot extract a .zip bundle: 'unzip' is not installed."
+                log_info "Install it (e.g. 'sudo apt install unzip') or ask for a .tar.gz bundle."
+                return 1
+            fi
+            unzip -q "$archive" -d "$dest"
+            ;;
+        *.tar.gz|*.tgz)
+            tar -xzf "$archive" -C "$dest" --no-same-owner --no-same-permissions
+            ;;
+        *.tar)
+            tar -xf "$archive" -C "$dest" --no-same-owner --no-same-permissions
+            ;;
+        *)
+            log_error "Unsupported bundle format: $archive (expected .zip, .tar.gz, .tgz or .tar)."
+            return 1
+            ;;
+    esac
+}
+
+_bundle_find_ca() {
+    find "$1" -type f -iname 'ca.crt' -print -quit 2>/dev/null
+}
+
+# _bundle_find_cert_pair <dir> -> "crt<TAB>key<TAB>name" (first matching pair)
+_bundle_find_cert_pair() {
+    local dir="$1" crt base key
+    while IFS= read -r crt; do
+        base="$(basename "$crt")"
+        base="${base%.*}"
+        [[ "${base,,}" == "ca" ]] && continue
+        key="$(dirname "$crt")/$base.key"
+        [[ -f "$key" ]] || continue
+        printf '%s\t%s\t%s\n' "$crt" "$key" "$base"
+        return 0
+    done < <(find "$dir" -type f -iname '*.crt' 2>/dev/null | sort)
+    return 1
+}
+
+_bundle_find_config() {
+    local dir="$1" f
+    for f in "$dir/config.yml.template" "$dir/config.yml"; do
+        [[ -f "$f" ]] && { printf '%s\n' "$f"; return 0; }
+    done
+    find "$dir" -type f \( -name 'config.yml.template' -o -name 'config.yml' \) -print -quit 2>/dev/null
+}
+
+# The exported config hardcodes /etc/nebula; rewrite it when the user installs
+# somewhere else. Done without sed to stay safe with special characters.
+_bundle_rebase_config() {
+    local src="$1" target="$2"
+    if [[ "$target" == "/etc/nebula" ]]; then
+        cat "$src"
+        return 0
+    fi
+    awk -v old="/etc/nebula" -v new="$target" '{
+        while ((i = index($0, old)) > 0)
+            $0 = substr($0, 1, i-1) new substr($0, i+length(old))
+        print
+    }' "$src"
+}
+
+_bundle_service() {
+    local hit
+    hit="$(_imp_scan_unit_files | awk -F'\t' '$1 == "nebula.service" { print; exit }')"
+    [[ -z "$hit" ]] && hit="$(_imp_scan_unit_files | awk -F'\t' '$1 !~ /@/ { print; exit }')"
+    if [[ -n "$hit" ]]; then printf '%s\n' "${hit%%$'\t'*}"; else printf 'nebula.service\n'; fi
+}
+
+# Copy with a timestamped backup of an existing destination, elevating only
+# when the destination directory is not writable by the current user.
+_bundle_copy_file() {
+    local src="$1" dest="$2" dir bak
+    dir="$(dirname "$dest")"
+    if [[ -e "$dest" ]]; then
+        bak="${dest}.bak.$(date +%Y%m%d-%H%M%S)"
+        if path_requires_root "$dir"; then
+            elevate_why "back up $dest" cp -p "$dest" "$bak" || return 1
+        else
+            cp -p "$dest" "$bak" || return 1
+        fi
+        log_info "Backed up existing $(basename "$dest") to $bak"
+    fi
+    if path_requires_root "$dir"; then
+        elevate_why "install $(basename "$src") into $dir" cp -p "$src" "$dest" || return 1
+    else
+        cp -p "$src" "$dest" || return 1
+    fi
+    return 0
+}
+
+# import_bundle_run <archive> [target_dir]
+# Installs a client bundle (cert/key/ca/config template), registers a
+# [server.*] entry and (when needed) asks for elevation. Never runs the
+# archive's contents.
+import_bundle_run() {
+    local archive="${1:-}" target="${2:-/etc/nebula}"
+    local force="${IMPORT_FORCE:-0}" yes="${IMPORT_YES:-0}" dry="${IMPORT_BUNDLE_DRY_RUN:-0}"
+    [[ -n "$archive" ]] || { log_error "Usage: nebula-manager import --bundle FILE [--dir DIR] [--yes]"; return 2; }
+    [[ -f "$archive" ]] || { log_error "Bundle not found: $archive"; return 1; }
+    target="${target/#\~/$HOME}"
+    [[ -z "$target" ]] && target="/etc/nebula"
+
+    local tmp; tmp="$(mktemp -d)"
+    _bundle_extract "$archive" "$tmp" || { rm -rf "$tmp"; return 1; }
+
+    local ca pair crt key name cfg_tmpl
+    ca="$(_bundle_find_ca "$tmp")" || ca=""
+    pair="$(_bundle_find_cert_pair "$tmp")" || pair=""
+    if [[ -z "$ca" || -z "$pair" ]]; then
+        log_error "This does not look like a nebula-manager client bundle."
+        log_info "Expected ca.crt plus a matching <name>.crt and <name>.key."
+        rm -rf "$tmp"; return 1
+    fi
+    IFS=$'\t' read -r crt key name <<< "$pair"
+    cfg_tmpl="$(_bundle_find_config "$tmp")" || cfg_tmpl=""
+    if [[ -z "$cfg_tmpl" ]]; then
+        log_error "Bundle is missing config.yml.template/config.yml."
+        rm -rf "$tmp"; return 1
+    fi
+
+    # Validate the certificate when nebula-cert is available.
+    local nc; nc="$(pki_cert_bin 2>/dev/null || true)"
+    if [[ -n "$nc" ]]; then
+        local json isca
+        json="$(nebula_cert_json "$(dirname "$nc")" "$crt")" || json=""
+        if [[ -z "$json" ]]; then
+            log_error "The bundle's certificate could not be parsed: $crt"
+            rm -rf "$tmp"; return 1
+        fi
+        isca="$(jq -r '.details.isCa // false' <<<"$json" 2>/dev/null)"
+        if [[ "$isca" == "true" ]]; then
+            log_error "The bundle contains a CA certificate, not a client certificate."
+            rm -rf "$tmp"; return 1
+        fi
+    fi
+
+    local service conf sname bin_path
+    service="$(_bundle_service)"
+    conf="$(resolve_server_conf)"
+    sname="$(printf '%s' "$name" | tr -c 'A-Za-z0-9_.-' '_')"
+    [[ -z "$sname" ]] && sname="$(hostname 2>/dev/null || echo client)"
+    bin_path="${NEBULA_BIN_PATH:-}"
+    if [[ ! -x "$bin_path/nebula" ]]; then
+        local nb; nb="$(command -v nebula 2>/dev/null || true)"
+        [[ -n "$nb" ]] && bin_path="$(dirname "$(readlink -f "$nb")")"
+    fi
+    [[ -z "$bin_path" ]] && bin_path="/usr/local/bin"
+
+    echo -e "${BOLD}${CYAN}Client bundle${RESET}"
+    printf '  archive:     %s\n' "$archive"
+    printf '  certificate: %s\n' "$name"
+    printf '  target:      %s\n' "$target"
+    printf '  service:     %s\n' "$service"
+    printf '  manager:     %s\n' "$conf"
+    printf '  files:       ca.crt, %s.crt, %s.key, config.yml\n' "$name" "$name"
+
+    if (( dry )); then
+        echo
+        log_info "Dry run: nothing written."
+        rm -rf "$tmp"; return 0
+    fi
+
+    if (( yes == 0 && force == 0 )); then
+        if [[ ! -t 0 ]]; then
+            log_error "Refusing to write without confirmation; re-run with --yes (or --force)."
+            rm -rf "$tmp"; return 1
+        fi
+        if ! ui_yesno "Import client bundle" "Install this client into $target?"; then
+            log_info "Aborted."
+            rm -rf "$tmp"; return 1
+        fi
+    fi
+
+    local cfg_dest="$target/config.yml"
+    if [[ -e "$cfg_dest" ]] && (( force == 0 )); then
+        if [[ -t 0 ]]; then
+            if ! ui_yesno "Import client bundle" "$cfg_dest already exists. Replace it (a backup is kept)?"; then
+                log_info "Aborted."
+                rm -rf "$tmp"; return 1
+            fi
+        else
+            log_error "Refusing to overwrite $cfg_dest (re-run with --force)."
+            rm -rf "$tmp"; return 1
+        fi
+    fi
+
+    ensure_dir "$target" || { rm -rf "$tmp"; return 1; }
+
+    local f
+    for f in "$ca" "$crt" "$key"; do
+        _bundle_copy_file "$f" "$target/$(basename "$f")" || { rm -rf "$tmp"; return 1; }
+    done
+
+    local tmpcfg; tmpcfg="$(mktemp)"
+    if ! _bundle_rebase_config "$cfg_tmpl" "$target" > "$tmpcfg"; then
+        rm -f "$tmpcfg"; rm -rf "$tmp"; return 1
+    fi
+    _bundle_copy_file "$tmpcfg" "$cfg_dest" || { rm -f "$tmpcfg"; rm -rf "$tmp"; return 1; }
+    rm -f "$tmpcfg"
+
+    SERVER_CONF="$conf"
+    if [[ ! -f "$SERVER_CONF" ]]; then
+        local tmpconf; tmpconf="$(mktemp)"
+        {
+            printf '# Generated by "nebula-manager import --bundle".\n'
+            printf '[global]\n'
+            printf 'bin_path=%s\n' "$bin_path"
+            printf 'cert_dir=%s\n' "$target"
+            printf '\n[server.%s]\n' "$sname"
+            printf 'dir=%s\n' "$target"
+            printf 'service=%s\n' "$service"
+            printf 'enabled=true\n'
+            printf 'role=client\n'
+        } > "$tmpconf"
+        ensure_dir "$(dirname "$SERVER_CONF")" || { rm -f "$tmpconf"; rm -rf "$tmp"; return 1; }
+        if _conf_write "$tmpconf"; then
+            log_success "Created $SERVER_CONF"
+        else
+            rm -f "$tmpconf"; rm -rf "$tmp"; return 1
+        fi
+        rm -f "$tmpconf"
+    else
+        server_add_entry "$sname" "$target" "$service" true client "" || { rm -rf "$tmp"; return 1; }
+    fi
+
+    if [[ -r "$cfg_dest" ]]; then
+        _nebula_info_derive "$cfg_dest" "$cfg_dest" >/dev/null 2>&1 || true
+    fi
+
+    rm -rf "$tmp"
+    log_success "Imported client '$name' into $target."
+    [[ "$target" != "/etc/nebula" ]] && log_warn "Custom target: ensure $service uses $cfg_dest."
+    log_info "Start the service from Maintenance if it is not running yet."
+    return 0
+}
+
+# Interactive Setup entry: choose a bundle with a file browser, then a target.
+import_bundle_tui() {
+    local start="${HOME:-$PWD}/Downloads"
+    [[ -d "$start" ]] || start="$PWD"
+    local archive; archive="$(ui_fselect "Import client bundle" "Select a client bundle (.zip / .tar.gz):" "$start")" || return 0
+    [[ -n "$archive" && -f "$archive" ]] || { log_error "No bundle selected."; return 1; }
+    local target; target="$(ui_input "Import client bundle" "Install into directory:" "/etc/nebula")" || return 0
+    target="${target/#\~/$HOME}"
+    [[ -z "$target" ]] && target="/etc/nebula"
+    # Interactive TUI: ask for confirmation. In a piped/automated run there is
+    # nobody to answer the prompt, so treat the selected paths as confirmation.
+    if [[ -t 0 ]]; then IMPORT_YES=0; else IMPORT_YES=1; fi
+    IMPORT_FORCE=0 IMPORT_BUNDLE_DRY_RUN=0
+    if import_bundle_run "$archive" "$target"; then
+        log_info "Reloading with the imported server..."
+        TUI_RESTART=1
+    fi
 }
 
 import_cli() { import_run "$@"; }
