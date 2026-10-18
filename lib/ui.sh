@@ -246,7 +246,7 @@ banner() {
     echo -e "${BG_BLACK}${GREEN}  ░█▀█░█▀▀░█▀▄░█░█░█░░░█▀█░░░█▄█░█▀█░█▀█░█▀█░█▀▀░█▀▀░█▀▄  
   ░█░█░█▀▀░█▀▄░█░█░█░░░█▀█░░░█░█░█▀█░█░█░█▀█░█░█░█▀▀░█▀▄  
   ░▀░▀░▀▀▀░▀▀░░▀▀▀░▀▀▀░▀░▀░░░▀░▀░▀░▀░▀░▀░▀░▀░▀▀▀░▀▀▀░▀░▀  
-${BG_ORANGE}  ${BOLD}${BLACK}By Jordan Hillis [jordan@hillis.email]    ${BOLD}⎦˚◡˚⎣ ${WHITE}v${MANAGER_VERSION:-${VERSION:-dev}}  ${RESET}"
+${BG_ORANGE}  ${BOLD}${BLACK}By Jordan Hillis [jordan@hillis.email] + ulno   ${WHITE}v${MANAGER_VERSION:-${VERSION:-dev}}  ${RESET}"
 }
 
 # Function for menu header menu
