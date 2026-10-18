@@ -92,4 +92,48 @@ assert_eq "no-change commit used no sudo" "$(sudo_count)" "$before_sudo"
 assert_eq "no-change commit created no backup" "$(count_backups "$CFG4")" "$before_bak"
 assert_no_file "no-change working copy removed" "$WORK4"
 
+# --- edit_nebula_config smoke test (mikefarah yq v4 syntax) --------------
+if yq_is_v4; then
+    EDIR="$SANDBOX/edit/editable"
+    ED="$EDIR/config.yml"
+    mkdir -p "$EDIR"
+    cat > "$ED" <<'YAML'
+pki:
+  ca: /etc/nebula/ca.crt
+  cert: /etc/nebula/client.crt
+  key: /etc/nebula/client.key
+static_host_map:
+  "10.100.0.1": ["vps:4545"]
+lighthouse:
+  am_lighthouse: false
+  interval: 60
+  hosts:
+    - "10.100.0.1"
+listen:
+  host: 0.0.0.0
+  port: 0
+punchy:
+  punch: true
+relay:
+  am_relay: false
+  use_relays: false
+  relays: []
+tun:
+  dev: nebula1
+YAML
+    mkdir -p "$SANDBOX/fakebin"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/fakebin/nebula"
+    chmod +x "$SANDBOX/fakebin/nebula"
+    OLD_BIN2="${NEBULA_BIN_PATH:-}"
+    export NEBULA_BIN_PATH="$SANDBOX/fakebin" NEBULA_DIR="$EDIR" NEBULA_NO_PROMPT=1
+    # Press Enter through every prompt (extra newlines are harmless).
+    printf '\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n' \
+        | edit_nebula_config >"$SANDBOX/edit.out" 2>&1; rc=$?
+    assert_eq "edit_nebula_config works with mikefarah yq v4" "$rc" "0"
+    assert_not_contains "edit_nebula_config has no yq flag error" "$(cat "$SANDBOX/edit.out")" "unknown shorthand flag"
+    assert_contains "edit_nebula_config kept the config" "$(cat "$ED")" "tun:"
+    if [[ -n "$OLD_BIN2" ]]; then export NEBULA_BIN_PATH="$OLD_BIN2"; else unset NEBULA_BIN_PATH; fi
+    unset NEBULA_DIR NEBULA_NO_PROMPT
+fi
+
 harness_summary

@@ -335,10 +335,11 @@ Commands:
                                   Default output: current dir, else ~/Downloads
   bench server|client [...]       iperf3 benchmarks
   diag                            Diagnostics (TUN IP, UDP socket, cert expiry)
+  dns status|setup                Nebula DNS: lighthouse serve_dns / client resolver
   config path|init|refresh|edit|remove   Manage nebula-manager.conf (offline template)
   server add|list|remove|...      Manage [server.*] entries in nebula-manager.conf
   import [--dry-run] [--yes]      Detect a running Nebula and generate nebula-manager.conf
-  import --bundle FILE [--dir DIR] [--yes] [--force]
+  import --bundle FILE [--dir DIR] [--yes] [--force] [--start]
                                   Install a client bundle (.zip/.tar.gz/.tgz/.tar)
   ui                              Report the selected menu/browse UI backends
   paths                           Print resolved config, key & cache paths
@@ -418,6 +419,7 @@ main() {
         cert|pki)       shift; pki_cli "$@" ;;
         bench)          shift; bench_cli "$@" ;;
         diag|diagnose)  shift; diag_cli "$@" ;;
+        dns)            shift; dns_cli "$@" ;;
         config|conf)    shift; config_cli "$@" ;;
         server|srv)     shift; server_cli "$@" ;;
         import)         shift; import_cli "$@" ;;

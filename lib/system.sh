@@ -2019,13 +2019,13 @@ configure_firewall_settings() {
     for key in outbound_action inbound_action; do
         current=$(yq -r ".firewall.$key" "$config_file")
         read -rp "$(printf "${YELLOW}firewall.$key${RESET} [${CYAN}%s${RESET}]: " "$current")" input
-        [[ -n "$input" ]] && yq -i -y ".firewall.$key = \"$input\"" "$config_file"
+        [[ -n "$input" ]] && yq -i ".firewall.$key = \"$input\"" "$config_file"
     done
     echo -e "${YELLOW}Edit conntrack timeouts (press Enter to skip):${RESET}"
     for key in tcp_timeout udp_timeout default_timeout; do
         current=$(yq -r ".firewall.conntrack.$key" "$config_file")
         read -rp "$(printf "${YELLOW}firewall.conntrack.$key${RESET} [${CYAN}%s${RESET}]: " "$current")" input
-        [[ -n "$input" ]] && yq -i -y ".firewall.conntrack.$key = \"$input\"" "$config_file"
+        [[ -n "$input" ]] && yq -i ".firewall.conntrack.$key = \"$input\"" "$config_file"
     done
 }
 
@@ -2056,7 +2056,7 @@ configure_inbound_rules() {
             delete)
                 read -rp "Enter rule index to delete: " index
                 if [[ "$index" =~ ^[0-9]+$ ]]; then
-                    yq -i -y "del(.firewall.inbound[$index])" "$config_file" && log_success "Rule $index deleted successfully."
+                    yq -i "del(.firewall.inbound[$index])" "$config_file" && log_success "Rule $index deleted successfully."
                 else log_error "Invalid index."; fi ;;
             edit)
                 read -rp "Enter rule index to edit: " index
@@ -2095,7 +2095,7 @@ configure_outbound_rules() {
             delete)
                 read -rp "Enter rule index to delete: " index
                 if [[ "$index" =~ ^[0-9]+$ ]]; then
-                    yq -i -y "del(.firewall.outbound[$index])" "$config_file" && log_success "Rule $index deleted successfully."
+                    yq -i "del(.firewall.outbound[$index])" "$config_file" && log_success "Rule $index deleted successfully."
                 else log_error "Invalid index."; fi ;;
             edit)
                 read -rp "Enter rule index to edit: " index
@@ -2121,7 +2121,7 @@ _edit_firewall_rule() {
     if [[ "$index" == "append" ]]; then
         is_new=1
         index=$(yq "$prefix | length" "$config_file")
-        yq -i -y "$prefix += [{}]" "$config_file"
+        yq -i "$prefix += [{}]" "$config_file"
     fi
     echo -e "$(show_status 'info') ${YELLOW}Configuring ${CYAN}$direction firewall${RESET}."
     echo -e "${YELLOW}Instructions:${RESET} Press Enter to skip a setting, or enter '-' to delete a field (except for port and proto)."
@@ -2140,7 +2140,7 @@ _edit_firewall_rule() {
                 if [[ "$field" == "port" || "$field" == "proto" ]]; then
                     log_error "Cannot delete required field: $field"; continue
                 else
-                    yq -i -y "del(${prefix}[${index}].${field})" "$config_file"; break
+                    yq -i "del(${prefix}[${index}].${field})" "$config_file"; break
                 fi
             fi
             case "$field" in
@@ -2152,23 +2152,23 @@ _edit_firewall_rule() {
             log_error "Invalid ${field}. Try again."
         done
         if [[ "$input" == "-" ]]; then
-            yq -i -y "del(${prefix}[${index}].${field})" "$config_file"
+            yq -i "del(${prefix}[${index}].${field})" "$config_file"
         elif [[ -n "$input" ]]; then
-            yq -i -y "${prefix}[${index}].${field} = \"$input\"" "$config_file"
+            yq -i "${prefix}[${index}].${field} = \"$input\"" "$config_file"
         fi
     done
     local current_groups; current_groups=$(yq -r "${prefix}[${index}].groups // [] | join(\", \")" "$config_file")
     printf "${YELLOW}%s${RESET} [${CYAN}%s${RESET}]: " "${rule_fields[groups]}" "$current_groups"
     read input
     if [[ "$input" == "-" ]]; then
-        yq -i -y "del(${prefix}[${index}].groups)" "$config_file"
+        yq -i "del(${prefix}[${index}].groups)" "$config_file"
     elif [[ -n "$input" ]]; then
-        yq -i -y "${prefix}[${index}].groups = []" "$config_file"
+        yq -i "${prefix}[${index}].groups = []" "$config_file"
         local -a groups; IFS=',' read -ra groups <<< "$input"
         local g
         for g in "${groups[@]}"; do
             g=$(echo "$g" | xargs)
-            [[ -n "$g" ]] && yq -i -y "${prefix}[${index}].groups += [\"$g\"]" "$config_file"
+            [[ -n "$g" ]] && yq -i "${prefix}[${index}].groups += [\"$g\"]" "$config_file"
         done
     fi
     check_nebula_config "$config_file" "error" "${CONFIG_EDIT_SOURCE:-$config_file}"
@@ -2186,7 +2186,7 @@ edit_nebula_config() {
     for key in ca cert key disconnect_invalid; do
         current=$(yq -r ".pki.$key" "$config_file")
         read -rp "$(printf "${YELLOW}pki.$key${RESET} [${CYAN}%s${RESET}]: " "$current")" input
-        [[ -n "$input" ]] && yq -i -y ".pki.$key = \"$input\"" "$config_file"
+        [[ -n "$input" ]] && yq -i ".pki.$key = \"$input\"" "$config_file"
     done
 
     echo -e "${YELLOW}Editing static_host_map entries.${RESET}"
@@ -2204,7 +2204,7 @@ edit_nebula_config() {
             local ip trimmed
             for ip in "${DEL[@]}"; do
                 trimmed=$(echo "$ip" | xargs)
-                yq -i -y "del(.static_host_map.\"$trimmed\")" "$config_file"
+                yq -i "del(.static_host_map.\"$trimmed\")" "$config_file"
             done
             log_success "Deleted specified entries."
         fi
@@ -2218,14 +2218,14 @@ edit_nebula_config() {
         [[ -z "$ip" ]] && break
         read -rp "$(printf "${YELLOW}Public IP of $ip:${RESET} ")" pub
         read -rp "$(printf "${YELLOW}Port of $ip:${RESET} ")" port
-        [[ -n "$pub" && -n "$port" ]] && yq -i -y ".static_host_map.\"$ip\" = [\"$pub:$port\"]" "$config_file"
+        [[ -n "$pub" && -n "$port" ]] && yq -i ".static_host_map.\"$ip\" = [\"$pub:$port\"]" "$config_file"
         ((i++))
     done
 
     for key in am_lighthouse interval; do
         current=$(yq -r ".lighthouse.$key" "$config_file")
         read -rp "$(printf "${YELLOW}lighthouse.$key${RESET} [${CYAN}%s${RESET}]: " "$current")" input
-        [[ -n "$input" ]] && yq -i -y ".lighthouse.$key = $input" "$config_file"
+        [[ -n "$input" ]] && yq -i ".lighthouse.$key = $input" "$config_file"
     done
 
     echo -e "${YELLOW}Editing lighthouse.hosts list.${RESET}"
@@ -2245,9 +2245,9 @@ edit_nebula_config() {
                 for d in "${del_indices[@]}"; do [[ "$i" -eq "$d" ]] && skip=true && break; done
                 $skip || new_hosts+=("${current_hosts[i]}")
             done
-            yq -i -y '.lighthouse.hosts = []' "$config_file"
+            yq -i '.lighthouse.hosts = []' "$config_file"
             local host
-            for host in "${new_hosts[@]}"; do yq -i -y ".lighthouse.hosts += [\"$host\"]" "$config_file"; done
+            for host in "${new_hosts[@]}"; do yq -i ".lighthouse.hosts += [\"$host\"]" "$config_file"; done
         fi
     else
         echo -e "${CYAN}(No current entries)${RESET}"
@@ -2258,27 +2258,27 @@ edit_nebula_config() {
         local host trimmed
         for host in "${HOSTS[@]}"; do
             trimmed=$(echo "$host" | xargs)
-            [[ -n "$trimmed" ]] && yq -i -y ".lighthouse.hosts += [\"$trimmed\"]" "$config_file"
+            [[ -n "$trimmed" ]] && yq -i ".lighthouse.hosts += [\"$trimmed\"]" "$config_file"
         done
     fi
 
     for key in host port; do
         current=$(yq -r ".listen.$key" "$config_file")
         read -rp "$(printf "${YELLOW}listen.$key${RESET} [${CYAN}%s${RESET}]: " "$current")" input
-        [[ -n "$input" ]] && yq -i -y ".listen.$key = \"$input\"" "$config_file"
+        [[ -n "$input" ]] && yq -i ".listen.$key = \"$input\"" "$config_file"
     done
 
     current=$(yq -r ".punchy.punch" "$config_file")
     read -rp "$(printf "${YELLOW}punchy.punch${RESET} [${CYAN}%s${RESET}]: " "$current")" input
-    [[ -n "$input" ]] && yq -i -y ".punchy.punch = $input" "$config_file"
+    [[ -n "$input" ]] && yq -i ".punchy.punch = $input" "$config_file"
 
     current=$(yq -r ".relay.am_relay" "$config_file")
     read -rp "$(printf "${YELLOW}relay.am_relay${RESET} [${CYAN}%s${RESET}]: " "$current")" input
-    [[ -n "$input" ]] && yq -i -y ".relay.am_relay = $input" "$config_file"
+    [[ -n "$input" ]] && yq -i ".relay.am_relay = $input" "$config_file"
 
     current=$(yq -r ".relay.use_relays" "$config_file")
     read -rp "$(printf "${YELLOW}relay.use_relays${RESET} [${CYAN}%s${RESET}]: " "$current")" input
-    [[ -n "$input" ]] && yq -i -y ".relay.use_relays = $input" "$config_file"
+    [[ -n "$input" ]] && yq -i ".relay.use_relays = $input" "$config_file"
 
     echo -e "${YELLOW}Editing relay.relays list.${RESET}"
     local -a current_relays; mapfile -t current_relays < <(yq -r '.relay.relays[]?' "$config_file")
@@ -2297,9 +2297,9 @@ edit_nebula_config() {
                 for d in "${del_indices[@]}"; do [[ "$i" -eq "$d" ]] && skip=true && break; done
                 $skip || new_relays+=("${current_relays[i]}")
             done
-            yq -i -y '.relay.relays = []' "$config_file"
+            yq -i '.relay.relays = []' "$config_file"
             local relay
-            for relay in "${new_relays[@]}"; do yq -i -y ".relay.relays += [\"$relay\"]" "$config_file"; done
+            for relay in "${new_relays[@]}"; do yq -i ".relay.relays += [\"$relay\"]" "$config_file"; done
         fi
     fi
     read -rp "$(printf "${YELLOW}Add relay IPs (comma-separated), or press Enter to skip:${RESET} ")" input
@@ -2308,22 +2308,267 @@ edit_nebula_config() {
         local relay trimmed
         for relay in "${RELAYS[@]}"; do
             trimmed=$(echo "$relay" | xargs)
-            [[ -n "$trimmed" ]] && yq -i -y ".relay.relays += [\"$trimmed\"]" "$config_file"
+            [[ -n "$trimmed" ]] && yq -i ".relay.relays += [\"$trimmed\"]" "$config_file"
         done
     fi
 
     current=$(yq -r ".tun.dev" "$config_file")
     read -rp "$(printf "${YELLOW}tun.dev${RESET} [${CYAN}%s${RESET}]: " "$current")" input
-    [[ -n "$input" ]] && yq -i -y ".tun.dev = \"$input\"" "$config_file"
+    [[ -n "$input" ]] && yq -i ".tun.dev = \"$input\"" "$config_file"
 
     log_success "Finished updating ${CYAN}$source${RESET}."
     config_edit_commit || return 1
     check_nebula_config "$source" "error"
 }
 
+###################################################################
+######################### Name resolution ########################
+###################################################################
+# Nebula's own DNS runs on a lighthouse (`serve_dns`). Clients still need their
+# OS resolver pointed at the lighthouse's overlay IP. These helpers do both and
+# explain the limitation (a lighthouse only knows hosts it has seen since boot).
+
+_dns_config_source() { printf '%s\n' "${NEBULA_DIR:-/etc/nebula}/config.yml"; }
+
+_dns_role() {
+    local cfg="$1"
+    if grep -qE '^[[:space:]]*am_lighthouse:[[:space:]]*true' "$cfg" 2>/dev/null; then
+        printf 'lighthouse\n'
+    else
+        printf 'client\n'
+    fi
+}
+
+_dns_static_ips() {
+    awk '
+        { sub(/\r$/, "") }
+        /^[[:space:]]*#/ { next }
+        /^[^[:space:]]/ { insec = ($0 ~ /^static_host_map:[[:space:]]*$/); next }
+        !insec { next }
+        /^[[:space:]]*"?[0-9A-Fa-f:.]+"?[[:space:]]*:/ {
+            k = $0; sub(/^[[:space:]]*"/, "", k); sub(/".*/, "", k); sub(/[[:space:]]*:.*/, "", k)
+            print k
+        }' "$1" 2>/dev/null
+}
+
+# Lighthouse overlay IPs: lighthouse.hosts first, then static_host_map keys.
+_dns_lh_ips() {
+    local cfg="$1" ip
+    local -a ips=()
+    if declare -F _pki_lh_hosts >/dev/null 2>&1; then
+        while IFS= read -r ip; do [[ -n "$ip" ]] && ips+=("$ip"); done < <(_pki_lh_hosts "$cfg")
+    fi
+    if (( ${#ips[@]} == 0 )); then
+        while IFS= read -r ip; do [[ -n "$ip" ]] && ips+=("$ip"); done < <(_dns_static_ips "$cfg")
+    fi
+    (( ${#ips[@]} )) && printf '%s\n' "${ips[@]}" | awk 'NF && !seen[$0]++'
+}
+
+# Mesh DNS suffix from the local client certificate name (e.g. ulno.mesh).
+_dns_mesh_domain() {
+    local cfg="$1" cert name
+    cert="$(awk -F: '/^[[:space:]]*cert[[:space:]]*:/ {gsub(/\r|\n|"/,"",$2); gsub(/^[ \t]+|[ \t]+$/,"",$2); print $2; exit}' "$cfg" 2>/dev/null)"
+    [[ -n "$cert" ]] || return 0
+    name="$(basename "$cert")"
+    name="${name%.*}"
+    [[ "$name" == *.* ]] && printf '%s\n' "${name#*.}"
+}
+
+dns_status() {
+    local source; source="$(_dns_config_source)"
+    [[ -f "$source" ]] || { log_error "Nebula config not found: $source"; return 1; }
+    local cfg; cfg="$(readable_nebula_config "$source")" || {
+        log_error "Cannot read Nebula config at $source."
+        return 1
+    }
+    local tmp=""; [[ "$cfg" != "$source" ]] && tmp="$cfg"
+    local role iface ip domain lh
+    role="$(_dns_role "$cfg")"
+    iface="$(iface_from_config "$cfg")"; iface="${iface:-nebula1}"
+    ip="$(iface_ip "$iface" 2>/dev/null | cut -d/ -f1)"
+    domain="$(_dns_mesh_domain "$cfg")"
+    lh="$(_dns_lh_ips "$cfg" | paste -sd, -)"
+    printf 'Config:       %s\n' "$source"
+    printf 'Role:         %s\n' "$role"
+    printf 'Interface:    %s%s\n' "$iface" "${ip:+ ($ip)}"
+    printf 'Lighthouse:   %s\n' "${lh:-none}"
+    printf 'Mesh domain:  %s\n' "${domain:-unknown}"
+    if [[ "$role" == lighthouse ]]; then
+        printf 'serve_dns:    %s\n' "$(grep -qE '^[[:space:]]*serve_dns:[[:space:]]*true' "$cfg" && echo enabled || echo disabled)"
+    elif command -v resolvectl >/dev/null 2>&1; then
+        printf 'resolvectl:\n'
+        resolvectl dns "$iface" 2>/dev/null | sed 's/^/  /'
+        resolvectl domain "$iface" 2>/dev/null | sed 's/^/  /'
+    else
+        printf 'resolvectl:   not installed\n'
+    fi
+    [[ -n "$tmp" ]] && rm -f "$tmp"
+}
+
+_dns_offer_restart() {
+    local service; service="$(basename "${NEBULA_SERVICE:-nebula.service}")"
+    command -v systemctl >/dev/null 2>&1 || return 0
+    [[ -t 0 && "${NEBULA_NO_PROMPT:-0}" != 1 ]] || return 0
+    ui_yesno "Restart Nebula" "Restart $service now to apply the DNS settings?" || return 0
+    elevate_why "restart the Nebula service ($service)" systemctl restart "$service" \
+        && log_success "Restarted $service."
+}
+
+# Lighthouse: turn on serve_dns and allow UDP/53 through the Nebula firewall.
+configure_lighthouse_dns() {
+    local source; source="$(_dns_config_source)"
+    [[ -f "$source" ]] || { log_error "Nebula config not found: $source"; return 1; }
+    require_yq_v4 || return 1
+
+    local r; r="$(readable_nebula_config "$source")" || {
+        log_error "Cannot read Nebula config at $source."
+        return 1
+    }
+    if [[ "$(_dns_role "$r")" != lighthouse ]]; then
+        [[ "$r" != "$source" ]] && rm -f "$r"
+        log_error "This node is not a lighthouse (am_lighthouse is not true)."
+        log_info "Run this on the lighthouse host (for example vps) instead."
+        return 1
+    fi
+    [[ "$r" != "$source" ]] && rm -f "$r"
+
+    config_edit_begin "$source" || return 1
+    local cfg="$CONFIG_EDIT_WORK" iface ip count
+    iface="$(iface_from_config "$cfg")"; iface="${iface:-nebula1}"
+    ip="$(iface_ip "$iface" 2>/dev/null | cut -d/ -f1)"
+    if [[ -z "$ip" ]]; then ip="0.0.0.0"; fi
+
+    if ! yq -i '.lighthouse.serve_dns = true' "$cfg"; then config_edit_cancel; return 1; fi
+    if ! yq -i ".lighthouse.dns.host = \"$ip\"" "$cfg"; then config_edit_cancel; return 1; fi
+    if ! yq -i '.lighthouse.dns.port = 53' "$cfg"; then config_edit_cancel; return 1; fi
+
+    count="$(yq -r '[.firewall.inbound[]? | select((.port|tostring) == "53" and .proto == "udp")] | length' "$cfg" 2>/dev/null)"
+    if [[ "${count:-0}" == "0" ]]; then
+        if ! yq -i '.firewall.inbound += [{"port": 53, "proto": "udp", "group": "any"}]' "$cfg"; then
+            config_edit_cancel; return 1
+        fi
+    fi
+
+    config_edit_commit || return 1
+    log_success "Lighthouse DNS enabled (bind ${ip}:53, firewall allows UDP/53)."
+    [[ "$ip" == "0.0.0.0" ]] && log_warn "Could not detect the overlay IP; DNS binds all interfaces. Set lighthouse.dns.host manually if needed."
+    _dns_offer_restart
+}
+
+# Install a oneshot unit that reapplies per-interface DNS after Nebula starts.
+_dns_install_resolved_unit() {
+    local iface="$1" domain="$2"; shift 2
+    local -a ips=("$@")
+    local rc; rc="$(command -v resolvectl)"
+    local service; service="$(basename "${NEBULA_SERVICE:-nebula.service}")"
+    local tmp; tmp="$(mktemp)"
+    {
+        printf '[Unit]\n'
+        printf 'Description=Apply Nebula DNS settings to systemd-resolved\n'
+        printf 'After=%s\n' "$service"
+        printf 'Wants=%s\n\n' "$service"
+        printf '[Service]\n'
+        printf 'Type=oneshot\n'
+        printf 'ExecStartPre=-/usr/bin/sleep 2\n'
+        printf 'ExecStart=-%s dns %s %s\n' "$rc" "$iface" "${ips[*]}"
+        printf 'ExecStart=-%s domain %s ~%s\n' "$rc" "$iface" "$domain"
+        printf 'RemainAfterExit=yes\n\n'
+        printf '[Install]\n'
+        printf 'WantedBy=multi-user.target\n'
+    } > "$tmp"
+    local dest="/etc/systemd/system/nebula-manager-resolved.service"
+    if ! elevate_why "install the Nebula DNS resolver unit ($dest)" cp "$tmp" "$dest"; then
+        rm -f "$tmp"; return 1
+    fi
+    rm -f "$tmp"
+    elevate_why "reload systemd for the Nebula DNS unit" systemctl daemon-reload || return 1
+    elevate_why "enable and start the Nebula DNS unit" systemctl enable --now nebula-manager-resolved.service || return 1
+    log_success "Installed $dest (reapplies DNS on boot)."
+}
+
+# Client: point systemd-resolved at the lighthouse for the mesh DNS suffix.
+configure_client_dns() {
+    local source; source="$(_dns_config_source)"
+    [[ -f "$source" ]] || { log_error "Nebula config not found: $source"; return 1; }
+    local cfg; cfg="$(readable_nebula_config "$source")" || {
+        log_error "Cannot read Nebula config at $source."
+        return 1
+    }
+    local tmp=""; [[ "$cfg" != "$source" ]] && tmp="$cfg"
+    local role iface domain ip
+    role="$(_dns_role "$cfg")"
+    iface="$(iface_from_config "$cfg")"; iface="${iface:-nebula1}"
+    domain="$(_dns_mesh_domain "$cfg")"
+    local -a lh=()
+    while IFS= read -r ip; do [[ -n "$ip" ]] && lh+=("$ip"); done < <(_dns_lh_ips "$cfg")
+    [[ -n "$tmp" ]] && rm -f "$tmp"
+
+    if [[ "$role" == lighthouse ]]; then
+        log_info "This node is a lighthouse - enable serving DNS instead (same menu)."
+        return 1
+    fi
+    if (( ${#lh[@]} == 0 )); then
+        log_error "No lighthouse overlay IPs found in $source (lighthouse.hosts/static_host_map)."
+        return 1
+    fi
+    if [[ -z "$domain" ]]; then
+        read -rp "$(show_status 'question') Mesh DNS suffix to route (e.g. theprof.mesh): " domain
+        [[ -z "$domain" ]] && return 1
+    fi
+    if ! command -v resolvectl >/dev/null 2>&1; then
+        log_error "resolvectl (systemd-resolved) is not installed."
+        log_info "Configure ${lh[0]} as DNS for $iface in your OS, or use /etc/hosts."
+        return 1
+    fi
+    if ! iface_is_up "$iface"; then
+        log_error "Interface $iface is not up. Start Nebula first (Maintenance > Toggle)."
+        return 1
+    fi
+
+    elevate_why "point systemd-resolved at the Nebula lighthouse DNS" resolvectl dns "$iface" "${lh[@]}" || return 1
+    elevate_why "route '$domain' to the Nebula DNS" resolvectl domain "$iface" "~$domain" || return 1
+    log_success "Name resolution: '$domain' -> ${lh[*]} via $iface."
+    log_info "The lighthouse can only answer for hosts it has seen since it started."
+
+    if [[ -t 0 && "${NEBULA_NO_PROMPT:-0}" != 1 ]]; then
+        if ui_yesno "Persist DNS" "Install a small systemd unit to reapply this on boot?"; then
+            _dns_install_resolved_unit "$iface" "$domain" "${lh[@]}"
+        fi
+    fi
+}
+
+manage_name_resolution() {
+    local source; source="$(_dns_config_source)"
+    [[ -f "$source" ]] || { log_error "Nebula config not found: $source"; return 1; }
+    dns_status || return 1
+    local r role
+    r="$(readable_nebula_config "$source")" || return 1
+    role="$(_dns_role "$r")"
+    [[ "$r" != "$source" ]] && rm -f "$r"
+    echo
+    if [[ "$role" == lighthouse ]]; then
+        if ui_yesno "Name resolution" "Enable the lighthouse DNS server (serve_dns + firewall UDP/53) now?"; then
+            configure_lighthouse_dns
+        fi
+    else
+        if ui_yesno "Name resolution" "Point this client's resolver at the lighthouse DNS now?"; then
+            configure_client_dns
+        fi
+    fi
+}
+
+dns_cli() {
+    local sub="${1:-status}"; shift || true
+    case "$sub" in
+        status) dns_status ;;
+        setup|enable|configure) manage_name_resolution ;;
+        *) log_error "Unknown 'dns' subcommand: $sub (status|setup)"; return 2 ;;
+    esac
+}
+
 manage_configuration() {
     dynamic_menu_title=("$MENU_PATH" "Configuration Management")
-    dynamic_menu_options=("$(get_icon 'validate')Validate Config" "$(get_icon 'configuration')Edit Config" "$(get_icon 'firewall')Edit Firewall")
-    dynamic_menu_functions=("check_nebula_config \"$NEBULA_DIR/config.yml\" \"error\"" "edit_nebula_config" "manage_firewall")
+    dynamic_menu_options=("$(get_icon 'validate')Validate Config" "$(get_icon 'configuration')Edit Config" "$(get_icon 'firewall')Edit Firewall" "$(get_icon 'connectivity')Name resolution (Nebula DNS)")
+    dynamic_menu_functions=("check_nebula_config \"$NEBULA_DIR/config.yml\" \"error\"" "edit_nebula_config" "manage_firewall" "manage_name_resolution")
     dynamic_menu dynamic_menu_title dynamic_menu_options dynamic_menu_functions 1
 }

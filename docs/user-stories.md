@@ -224,6 +224,12 @@ Headless equivalent:
 ./nebula-manager import --bundle ~/theprof3.theprof.mesh-nebula-bundle.zip --yes
 ```
 
+The import offers to enable and start `nebula.service` when it is installed but
+not running. To make names resolve, enable DNS **on the lighthouse** once:
+**Configuration ▸ Name resolution (Nebula DNS)** → serve DNS on the overlay
+(`serve_dns`, port 53, firewall UDP/53). Then run the same menu on each client
+so `*.theprof.mesh` is routed to the lighthouse via `systemd-resolved`.
+
 <details><summary>Manual alternative (no import wizard)</summary>
 
 ```bash

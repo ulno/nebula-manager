@@ -117,4 +117,21 @@ assert_contains "CLI created manager.conf" "$(cat "$CLI_CONF")" "[server.client1
 assert_contains "CLI output names the client" "$out" "Imported client 'client1'"
 assert_eq "CLI bundle import used no sudo" "$(sudo_count)" "0"
 
+# --- post-import service start ---------------------------------------------
+systemctl() {
+    case "${1:-}" in
+        is-active) return 1 ;;
+        cat)       return 0 ;;
+        *)         return 0 ;;
+    esac
+}
+START_CONF="$SANDBOX/start.conf"
+START_TARGET="$SANDBOX/start-target"
+: > "$SUDO_LOG"
+export CONF_OVERRIDE="$START_CONF" IMPORT_YES=1 IMPORT_FORCE=0 IMPORT_BUNDLE_DRY_RUN=0 IMPORT_START=1
+out="$(import_bundle_run "$ARCHIVE" "$START_TARGET" 2>&1)"; rc=$?
+assert_eq "bundle import with --start succeeds" "$rc" "0"
+assert_contains "--start enables and starts the service" "$(cat "$SUDO_LOG")" "systemctl enable --now"
+unset -f systemctl
+
 harness_summary

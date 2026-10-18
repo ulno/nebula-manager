@@ -226,13 +226,14 @@ import_write_conf() {
 
 # import_run [--dry-run] [--yes] [--force] [--from CONFIG] [--config OUT] [OUT]
 import_run() {
-    IMPORT_YES=0 IMPORT_FORCE=0 IMPORT_FROM="" IMPORT_BUNDLE="" IMPORT_DIR=""
+    IMPORT_YES=0 IMPORT_FORCE=0 IMPORT_START=0 IMPORT_FROM="" IMPORT_BUNDLE="" IMPORT_DIR=""
     local dest="" dry=0
     while (($#)); do
         case "$1" in
             --dry-run|-n) dry=1 ;;
             --yes|-y)     IMPORT_YES=1 ;;
             --force|-f)   IMPORT_FORCE=1 ;;
+            --start)      IMPORT_START=1 ;;
             --from)       shift; IMPORT_FROM="${1:-}" ;;
             --bundle)     shift; IMPORT_BUNDLE="${1:-}" ;;
             --dir)        shift; IMPORT_DIR="${1:-}" ;;
@@ -527,9 +528,31 @@ import_bundle_run() {
     fi
 
     rm -rf "$tmp"
+    # Offer to enable/start the service when it is installed but not running.
+    if command -v systemctl >/dev/null 2>&1; then
+        if systemctl is-active --quiet "$service" 2>/dev/null; then
+            log_info "Service $service is already running."
+        else
+            local do_start="${IMPORT_START:-0}"
+            if ! systemctl cat "$service" >/dev/null 2>&1; then
+                log_warn "systemd unit $service not found; install Nebula first, then start it from Maintenance."
+            elif (( do_start == 0 )) && [[ -t 0 && "${NEBULA_NO_PROMPT:-0}" != 1 ]]; then
+                ui_yesno "Start Nebula" "The service $service is not running. Enable and start it now?" && do_start=1
+            fi
+            if (( do_start )); then
+                if elevate_why "enable and start the Nebula service ($service)" systemctl enable --now "$service"; then
+                    log_success "Enabled and started $service."
+                else
+                    log_error "Could not start $service; check: systemctl status $service"
+                fi
+            else
+                log_info "Start the service from Maintenance when you are ready."
+            fi
+        fi
+    fi
+
     log_success "Imported client '$name' into $target."
     [[ "$target" != "/etc/nebula" ]] && log_warn "Custom target: ensure $service uses $cfg_dest."
-    log_info "Start the service from Maintenance if it is not running yet."
     return 0
 }
 
@@ -584,7 +607,7 @@ import_bundle_tui() {
     # Interactive TUI: ask for confirmation. In a piped/automated run there is
     # nobody to answer the prompt, so treat the selected paths as confirmation.
     if [[ -t 0 ]]; then IMPORT_YES=0; else IMPORT_YES=1; fi
-    IMPORT_FORCE=0 IMPORT_BUNDLE_DRY_RUN=0
+    IMPORT_FORCE=0 IMPORT_START=0 IMPORT_BUNDLE_DRY_RUN=0
     if import_bundle_run "$archive" "$target"; then
         log_info "Reloading with the imported server..."
         TUI_RESTART=1

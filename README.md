@@ -269,8 +269,9 @@ Press Enter for /etc/nebula, or type a path directly.
 ```
 Existing files are backed up with a timestamp; an existing `config.yml` is never
 replaced without confirmation or `--force`. It then creates/updates
-`nebula-manager.conf` (`[server.<name>]`, `dir=<target>`, `role=client`) and
-reloads straight into the main menu.
+`nebula-manager.conf` (`[server.<name>]`, `dir=<target>`, `role=client`), offers
+to **enable and start the systemd service** when it is installed but not running,
+and reloads straight into the main menu.
 
 Headless equivalent:
 
@@ -339,7 +340,7 @@ headless subcommands for scripting — see *Expert / scriptable* below.
 | **Setup** | shows the **detected state** (config, Nebula service, cert workspace), then: import/update from this host, **import a client bundle (.zip/.tar.gz)**, create, browse, edit, delete `nebula-manager.conf`, manage servers, pick the certificate workspace |
 | **Servers** | list / add / enable-disable / remove `[server.*]` entries |
 | **Certificates** | list, create CA, sign, view, expiry, **bundle/export** (pick from a list), revoke, switch workspace |
-| **Configuration** | validate / edit Nebula `config.yml` (service-owned files are edited on a working copy and saved once with a timestamped backup), edit firewall rules |
+| **Configuration** | validate / edit Nebula `config.yml` (service-owned files are edited on a working copy and saved once with a timestamped backup), edit firewall rules, **name resolution (Nebula DNS)** |
 | **Connectivity** | ping every cert IP; optional `iperf3` test |
 | **Diagnostics** | TUN IP, listening UDP socket, certificate expiry; reads a service-owned config once with temporary sudo and caches the header values |
 | **Benchmarks** | `iperf3` server / client |
@@ -401,6 +402,36 @@ commands and any errors remain visible for verification. Use `--clear-screen`
 ./nebula-manager auto-update            # update Nebula to latest
 ./nebula-manager --version
 ```
+
+### Name resolution (Nebula DNS)
+
+Nebula does not change your OS resolver automatically. Name resolution has two
+halves:
+
+**On the lighthouse** (`am_lighthouse: true`): **Configuration ▸ Name resolution
+(Nebula DNS)** sets `lighthouse.serve_dns: true`, `lighthouse.dns.host` (the
+overlay IP), `dns.port: 53`, and adds an inbound firewall rule for UDP/53. It
+offers to restart the service.
+
+**On a client:** the same menu reads `lighthouse.hosts` (falling back to
+`static_host_map`) and the mesh suffix from the client certificate, then runs:
+
+```bash
+sudo resolvectl dns nebula1 10.100.0.1
+sudo resolvectl domain nebula1 '~ulno.mesh'
+```
+
+and optionally installs `nebula-manager-resolved.service` to reapply this on
+boot. Only the mesh suffix is routed to Nebula, so public DNS keeps working.
+
+```bash
+nebula-manager dns status   # role, interface, lighthouse IPs, mesh suffix
+nebula-manager dns setup    # same interactive action as the menu
+```
+
+Limitations: the lighthouse only answers for hosts it has seen since it started;
+automatic client setup requires `systemd-resolved` (`resolvectl`). Without it,
+configure the lighthouse overlay IP as DNS for the Nebula interface manually.
 
 ### Global flags
 
@@ -650,7 +681,8 @@ What it covers:
 | `tests/test_bundle.sh` | client export: candidate listing, substring/ambiguous matching, default output dir, TUI picker, mode 0600 |
 | `tests/test_client_config.sh` | generated client template: real static_host_map/lighthouse/punchy/listen/tun/firewall from the local config, `[server.*]` fallback, and missing-value warnings |
 | `tests/test_edit.sh` | privileged-safe config editing: working copy for read-only/unreadable configs, elevated write-back, timestamped backup, and no-op when nothing changed |
-| `tests/test_import_bundle.sh` | client bundle import: tar.gz extraction, validation, path rebasing, manager.conf creation, overwrite/backup, dry-run, TUI wrapper, CLI |
+| `tests/test_import_bundle.sh` | client bundle import: tar.gz extraction, validation, path rebasing, manager.conf creation, overwrite/backup, dry-run, TUI wrapper, CLI, post-import `--start` |
+| `tests/test_dns.sh` | Nebula DNS: lighthouse `serve_dns` + UDP/53 firewall, client `resolvectl` DNS/domain setup, status output, static_host_map fallback |
 | `tests/pki.bats` | BATS mirror of the core unprivileged-PKI guarantees |
 
 Requirements: `bash`, `nebula-cert` (for PKI tests; auto-skipped otherwise).
