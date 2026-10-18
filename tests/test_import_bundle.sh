@@ -83,6 +83,19 @@ out="$(import_bundle_run "$SANDBOX/bad.tar.gz" "$SANDBOX/bad-target" 2>&1)"; rc=
 assert_eq "malformed bundle fails" "$rc" "1"
 assert_contains "malformed bundle is explained" "$out" "does not look like a nebula-manager client bundle"
 
+# --- target selection menu --------------------------------------------------
+out="$(printf '\n' | _bundle_target_menu 2>/dev/null)"
+assert_eq "target menu: Enter selects /etc/nebula" "$out" "/etc/nebula"
+
+out="$(printf '2\n' | _bundle_target_menu 2>/dev/null)"
+assert_eq "target menu: home option" "$out" "$HOME/nebula"
+
+out="$(printf '%s\n' "$SANDBOX/custom-target" | _bundle_target_menu 2>/dev/null)"
+assert_eq "target menu: typed path" "$out" "$SANDBOX/custom-target"
+
+out="$(printf '3\n%s\n' "$SANDBOX/browsed-target" | _bundle_target_menu 2>/dev/null)"
+assert_eq "target menu: browsed path" "$out" "$SANDBOX/browsed-target"
+
 # --- TUI wrapper: file picker + target prompt + reload ---------------------
 TARGET_TUI="$SANDBOX/tui-target"
 export CONF_OVERRIDE="$SANDBOX/tui.conf" IMPORT_YES=0 IMPORT_FORCE=0 IMPORT_BUNDLE_DRY_RUN=0

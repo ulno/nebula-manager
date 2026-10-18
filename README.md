@@ -253,6 +253,20 @@ missing lighthouses.
 the archive safely, validates `ca.crt` plus the matching `<name>.crt`/`<name>.key`,
 and installs them together with the bundled `config.yml.template` (renamed to
 `config.yml`, with `/etc/nebula` rewritten if you choose another target).
+
+The install-directory menu explains the trade-off and offers a default:
+
+```text
+Where should the bundle be installed?
+
+/etc/nebula is read by the system Nebula service (writes need sudo).
+/home/you/nebula is user-owned (no sudo, but only manual runs use it).
+Press Enter for /etc/nebula, or type a path directly.
+  1. /etc/nebula (system service; needs sudo) [default]
+  2. /home/you/nebula (user-owned; no sudo)
+  3. Browse for a directory...
+  4. Type a path...
+```
 Existing files are backed up with a timestamp; an existing `config.yml` is never
 replaced without confirmation or `--force`. It then creates/updates
 `nebula-manager.conf` (`[server.<name>]`, `dir=<target>`, `role=client`) and

@@ -533,13 +533,52 @@ import_bundle_run() {
     return 0
 }
 
+# Ask where a client bundle should be installed. Explains the two common
+# choices, offers a browser/custom path, and defaults to /etc/nebula.
+_bundle_target_menu() {
+    local home_target="${HOME:-$PWD}/nebula"
+    local prompt="Where should the bundle be installed?
+
+/etc/nebula is read by the system Nebula service (writes need sudo).
+${home_target} is user-owned (no sudo, but only manual runs use it).
+Press Enter for /etc/nebula, or type a path directly."
+    local choice rc
+    while true; do
+        choice="$(ui_menu_or_text "Import client bundle" "$prompt" \
+            "system" "/etc/nebula (system service; needs sudo) [default]" \
+            "home" "${home_target} (user-owned; no sudo)" \
+            "browse" "Browse for a directory..." \
+            "custom" "Type a path...")"
+        rc=$?
+        (( rc == 1 )) && return 1
+        (( rc == 2 )) && { printf '%s\n' "/etc/nebula"; return 0; }
+
+        case "$choice" in
+            system) printf '%s\n' "/etc/nebula"; return 0 ;;
+            home)   printf '%s\n' "$home_target"; return 0 ;;
+            text:*) printf '%s\n' "${choice#text:}"; return 0 ;;
+            browse)
+                local picked
+                picked="$(ui_dselect "Import client bundle" "Select the install directory:" "${HOME:-$PWD}")" || continue
+                [[ -n "$picked" ]] && { printf '%s\n' "$picked"; return 0; }
+                ;;
+            custom)
+                local typed
+                typed="$(ui_input "Import client bundle" "Install directory:" "/etc/nebula")" || continue
+                typed="${typed/#\~/$HOME}"
+                [[ -n "$typed" ]] && { printf '%s\n' "$typed"; return 0; }
+                ;;
+        esac
+    done
+}
+
 # Interactive Setup entry: choose a bundle with a file browser, then a target.
 import_bundle_tui() {
     local start="${HOME:-$PWD}/Downloads"
     [[ -d "$start" ]] || start="$PWD"
     local archive; archive="$(ui_fselect "Import client bundle" "Select a client bundle (.zip / .tar.gz):" "$start")" || return 0
     [[ -n "$archive" && -f "$archive" ]] || { log_error "No bundle selected."; return 1; }
-    local target; target="$(ui_input "Import client bundle" "Install into directory:" "/etc/nebula")" || return 0
+    local target; target="$(_bundle_target_menu)" || return 0
     target="${target/#\~/$HOME}"
     [[ -z "$target" ]] && target="/etc/nebula"
     # Interactive TUI: ask for confirmation. In a piped/automated run there is

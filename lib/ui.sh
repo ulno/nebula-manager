@@ -393,7 +393,9 @@ ui_input() {
         whiptail) value=$(whiptail --title "$title" --inputbox "$prompt" 15 70 "$default" 3>&1 1>&2 2>&3) || return 1 ;;
         dialog)   value=$(dialog --title "$title" --inputbox "$prompt" 15 70 "$default" 3>&1 1>&2 2>&3) || return 1 ;;
         *)
-            read -rp "$(show_status 'question') $prompt " value
+            local shown="$prompt"
+            [[ -n "$default" ]] && shown="$prompt [${default}]"
+            read -rp "$(show_status 'question') $shown " value
             [[ -z "$value" && -n "$default" ]] && value="$default"
             ;;
     esac
