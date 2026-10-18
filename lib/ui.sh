@@ -344,6 +344,20 @@ ui_browse_backend() {
 }
 
 # ui_report : explain which backends are selected and why (diagnostic aid).
+# Screen clearing is opt-in: keeping the transcript makes the TUI easier to
+# verify and learn from. Enable with --clear-screen or NEBULA_CLEAR_SCREEN=1.
+ui_clear_enabled() {
+    case "${NEBULA_CLEAR_SCREEN:-0}" in
+        1|true|yes|on) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+ui_clear() {
+    ui_clear_enabled || return 0
+    clear 2>/dev/null || printf '\033[2J\033[H'
+}
+
 ui_report() {
     local m b
     m="$(ui_backend)"; b="$(ui_browse_backend)"

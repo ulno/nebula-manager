@@ -36,6 +36,13 @@ assert_contains "NEBULA_KEYS_DIR honoured via entry" "$out" "cert-dir:  $SANDBOX
 out="$(NEBULA_KEYS_DIR="$SANDBOX/env" "$NM" --cert-dir="$SANDBOX/cli" paths)"
 assert_contains "cli --cert-dir beats env at entry level" "$out" "cert-dir:  $SANDBOX/cli"
 
+out="$("$NM" paths)"
+assert_contains "screen clearing is off by default" "$out" "clear-screen: 0"
+out="$("$NM" --clear-screen paths)"
+assert_contains "--clear-screen is parsed" "$out" "clear-screen: 1"
+out="$(NEBULA_CLEAR_SCREEN=1 "$NM" --no-clear-screen paths)"
+assert_contains "--no-clear-screen wins" "$out" "clear-screen: 0"
+
 # --- argument validation ---
 err="$("$NM" sign 2>&1)"; rc=$?
 assert_eq "sign without args exits 2" "$rc" "2"

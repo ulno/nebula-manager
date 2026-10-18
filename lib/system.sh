@@ -1746,7 +1746,7 @@ select_nebula_server() {
 
     SERVER_NAME="$SELECTED_SERVER"
     load_server_config "$SERVER_NAME"
-    clear
+    ui_clear
 }
 
 ###################################################################

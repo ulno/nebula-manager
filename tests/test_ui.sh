@@ -81,6 +81,16 @@ report="$(ui_report)"
 assert_contains "ui_report shows the menu backend"   "$report" "menu backend:"
 assert_contains "ui_report shows the browse backend" "$report" "browse backend:"
 
+# --- screen clearing is opt-in (keep the transcript by default) -------------
+clear() { echo CLEARED; }
+out="$(NEBULA_CLEAR_SCREEN=0 ui_clear)"
+assert_eq "screen clearing is off by default" "$out" ""
+out="$(NEBULA_CLEAR_SCREEN=1 ui_clear)"
+assert_eq "screen clearing enabled by env" "$out" "CLEARED"
+out="$(NEBULA_CLEAR_SCREEN=yes ui_clear)"
+assert_eq "screen clearing accepts yes" "$out" "CLEARED"
+unset -f clear
+
 # --- menu geometry: box sized to content, capped to terminal, descs truncated ---
 UI_MENU_COLS=80
 UI_MENU_ROWS=24

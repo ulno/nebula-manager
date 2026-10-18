@@ -274,7 +274,7 @@ tui_main() {
     TUI_RESTART=0
     while true; do
         rm -f /tmp/nebula_failed_*
-        clear
+        ui_clear
         load_global_config
         check_dependencies || exit 1
         banner
@@ -282,7 +282,7 @@ tui_main() {
         if select_nebula_server; then
             # Offer a certificate workspace if none is known yet (first run).
             first_run_workspace_setup
-            banner
+            if ui_clear_enabled; then banner; fi
             top_header
             main_menu
         else
@@ -316,6 +316,8 @@ Global options:
   --debug <levels>      Debug mode: warn|log|info|learn|all (comma-separated)
                         learn prints every Nebula CLI command before running it
   -l, --learn           Shorthand for --debug=learn
+  --clear-screen        Clear the screen between TUI redraws (default: keep transcript)
+  --no-clear-screen     Keep the transcript (default)
   --no-color            Disable colored output
   -v, --version         Print version
   -h, --help            Show this help
@@ -354,6 +356,7 @@ Environment:
   NEBULA_UI            UI backend override
   DEBUG                Debug levels: warn|log|info|learn|all
                         (same as --debug; learn shows the Nebula CLI commands)
+  NEBULA_CLEAR_SCREEN  Set to 1 to clear between TUI redraws (default: off)
 
 Update checks follow your repo (git origin -> NEBULA_MANAGER_REPO -> upstream).
 To check the upstream project explicitly:
@@ -368,6 +371,7 @@ print_paths() {
     printf 'lib-dir:   %s\n' "$MANAGER_LIB_DIR"
     printf 'ui-backend: %s\n' "$(ui_backend)"
     printf 'debug:     %s\n' "${DEBUG:-log}"
+    printf 'clear-screen: %s\n' "${NEBULA_CLEAR_SCREEN:-0}"
     printf 'info-cache: %s\n' "$(nebula_info_cache_file)"
     printf 'update-repo: %s@%s\n' "${REPO_SLUG:-jordanhillis/nebula-manager}" "${REPO_REF:-main}"
 }
@@ -388,6 +392,8 @@ parse_global_flags() {
             --debug=*)      DEBUG="${1#*=}" ;;
             --debug)        shift; DEBUG="${1:-all}" ;;
             --learn|-l)     DEBUG=learn ;;
+            --clear-screen) NEBULA_CLEAR_SCREEN=1 ;;
+            --no-clear-screen) NEBULA_CLEAR_SCREEN=0 ;;
             --no-color)     USE_COLOR=false ;;
             --auto-update-nebula) REMAINING_ARGS+=("auto-update") ;;
             *)              REMAINING_ARGS+=("$1") ;;

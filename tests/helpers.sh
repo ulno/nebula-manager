@@ -62,8 +62,8 @@ MOCK
 
     # Quiet, deterministic, non-interactive UI.
     export USE_COLOR=false USE_ICONS=false NEBULA_UI=plain
-    # Never inherit a developer's DEBUG setting.
-    unset DEBUG 2>/dev/null || true
+    # Never inherit developer toggles that change output.
+    unset DEBUG NEBULA_CLEAR_SCREEN 2>/dev/null || true
     # Keep tests deterministic: never auto-read the host's Nebula config (an
     # explicit NEBULA_LOCAL_CONFIG is still honoured).
     export NEBULA_NO_LOCAL_CONFIG=1

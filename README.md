@@ -356,6 +356,10 @@ Handy extras: menus are **plain numbered** by default (easy to script and debug)
 file/directory browsing automatically uses `whiptail` when it is installed.
 `NEBULA_UI=whiptail nebula-manager` forces the curses UI for the menus too.
 
+Screen clearing is **off by default**, so the menu history, `DEBUG=learn`
+commands and any errors remain visible for verification. Use `--clear-screen`
+(or `NEBULA_CLEAR_SCREEN=1`) for the old full-screen behaviour.
+
 ### Expert / scriptable (the same actions as the menus)
 
 ```bash
@@ -407,6 +411,8 @@ file/directory browsing automatically uses `whiptail` when it is installed.
 | `--ui auto\|plain\|whiptail\|dialog` | Force a UI backend |
 | `--debug <levels>` | Debug mode: `warn\|log\|info\|learn\|all` (comma-separated; see below) |
 | `-l`, `--learn` | Shorthand for `--debug=learn` |
+| `--clear-screen` | Clear the screen between TUI redraws (default: keep the transcript) |
+| `--no-clear-screen` | Keep the transcript (default) |
 | `--no-color` | Disable coloured output |
 
 ### Environment variables
@@ -426,6 +432,7 @@ file/directory browsing automatically uses `whiptail` when it is installed.
 | `NEBULA_NO_PROMPT` | Set to `1` to never prompt; unreadable privileged files are skipped instead of read via sudo (used internally for state detection) |
 | `NEBULA_DEFAULT_PORT` | Fallback Nebula listen port for diagnostics (default `4242`) |
 | `DEBUG` | Debug levels: `warn`, `log` (default), `info`, `learn`, `all` — same as `--debug` |
+| `NEBULA_CLEAR_SCREEN` | Set to `1` to clear between TUI redraws (default: off, transcript preserved) |
 
 ### Debug modes (`DEBUG` / `--debug`)
 
