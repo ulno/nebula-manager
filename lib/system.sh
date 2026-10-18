@@ -201,11 +201,19 @@ pkg_for() {
   printf '%s' "${PKG_BASE[$bin]}"
 }
 
-# yq is only used by the firewall editor, and it must be mikefarah's v4.
+# yq is used by the config/firewall editors and must be mikefarah's v4.
 # The `yq` in the Ubuntu/Mint/Debian archives is the incompatible Python v3.
 yq_is_v4() {
   command -v yq >/dev/null 2>&1 || return 1
   yq --version 2>/dev/null | grep -qiE 'mikefarah|version v?4\.'
+}
+
+require_yq_v4() {
+  yq_is_v4 && return 0
+  log_error "The config/firewall editor requires mikefarah yq v4."
+  log_info "Fedora: 'sudo dnf install yq'  |  Arch/CachyOS: 'sudo pacman -S go-yq'"
+  log_info "Ubuntu/Mint/Debian: install the upstream binary (docs/linux-distros.md)."
+  return 1
 }
 
 # Function to check required packages. Returns 0 when nothing is missing (even
@@ -264,6 +272,8 @@ check_nebula_installed() {
 check_nebula_config() {
     local config_file="${1:-${NEBULA_DIR:-/etc/nebula}/config.yml}"
     local filter="${2:-}"
+    # Optional: the real config path when config_file is an editable temp copy.
+    local source_cfg="${3:-$config_file}"
     if [[ ! -f "$config_file" ]]; then
         log_error "Nebula config file not found at $config_file."
         return 1
@@ -279,20 +289,34 @@ check_nebula_config() {
     local cfg="$r" tmp=""
     [[ "$cfg" != "$config_file" ]] && tmp="$cfg"
     # Refresh the header cache from this successful read (keyed by the real path).
-    _nebula_info_derive "$cfg" "$config_file" >/dev/null 2>&1 || true
+    _nebula_info_derive "$cfg" "$source_cfg" >/dev/null 2>&1 || true
 
     echo -e "$(show_status 'info') ${CYAN}Testing Nebula config: ${config_file}${RESET}"
-    local output status
-    # Print separately: command substitution captures stderr, which must stay
-    # free of debug lines (it becomes the diagnostic output below).
-    debug_print_cmd "$(nebula_bin)" -test -config "$cfg"
-    output="$("$(nebula_bin)" -test -config "$cfg" 2>&1)"
-    status=$?
+    local output status needed_elevation=0 tried_elevated=0
+    [[ "$cfg" != "$config_file" ]] && needed_elevation=1
 
-    # A config readable only via elevation usually references key/cert files
-    # that are service-owned too. Offer a one-time elevated validation rather
-    # than reporting a misleading "invalid config".
-    if (( status != 0 )) && grep -qiE 'permission denied|unable to read pki|open .*: permission denied' <<<"$output"; then
+    # If the config itself could only be read via elevation, its key/cert files
+    # are almost certainly service-owned too. Run the test elevated directly
+    # when sudo credentials are already cached (the usual case right after the
+    # read) instead of producing a predictable permission failure first.
+    if (( needed_elevation )) && ! is_root && sudo -n true 2>/dev/null; then
+        tried_elevated=1
+        echo -e "$(show_status 'info') ${CYAN}Validating with temporary sudo (needs the key/cert files)...${RESET}"
+        output="$(elevate_why "validate the Nebula config (reads its key/cert files)" \
+            "$(nebula_bin)" -test -config "$config_file" 2>&1)"
+        status=$?
+    else
+        # Print separately: command substitution captures stderr, which must stay
+        # free of debug lines (it becomes the diagnostic output below).
+        debug_print_cmd "$(nebula_bin)" -test -config "$cfg"
+        output="$("$(nebula_bin)" -test -config "$cfg" 2>&1)"
+        status=$?
+    fi
+
+    # A config readable without elevation can still reference service-owned
+    # key/cert files; offer an elevated re-test rather than reporting a
+    # misleading "invalid config".
+    if (( status != 0 && !tried_elevated )) && grep -qiE 'permission denied|unable to read pki|open .*: permission denied' <<<"$output"; then
         local do_elev=0
         if is_root; then
             do_elev=0   # already root; the first run used the same privileges
@@ -1879,15 +1903,96 @@ check_script_update() {
 ######################## Config / firewall editing #################
 ###################################################################
 
-manage_firewall() {
-    local config_file="$NEBULA_DIR/config.yml"
-    [[ -f "$config_file" ]] || { log_error "Config file not found: $config_file"; return 1; }
-    if ! yq_is_v4; then
-        log_error "The firewall editor requires mikefarah yq v4."
-        log_info "Fedora: 'sudo dnf install yq'  |  Arch/CachyOS: 'sudo pacman -S go-yq'"
-        log_info "Ubuntu/Mint/Debian: install the upstream binary (docs/linux-distros.md)."
+# Editing a possibly service-owned config: never run yq against a path the
+# current user cannot read/write. Work on a user-owned copy and write it back
+# only once (with a backup) when the editor finishes.
+CONFIG_EDIT_SOURCE=""
+CONFIG_EDIT_WORK=""
+CONFIG_EDIT_TMP=""
+CONFIG_EDIT_HASH=""
+
+config_edit_begin() {
+    local src="${1:-}" r
+    CONFIG_EDIT_SOURCE="$src"; CONFIG_EDIT_WORK=""; CONFIG_EDIT_TMP=""; CONFIG_EDIT_HASH=""
+    [[ -f "$src" ]] || { log_error "Config file not found: $src"; return 1; }
+
+    # Editable in place: no elevation and no copy needed.
+    if [[ -r "$src" && -w "$src" ]]; then
+        CONFIG_EDIT_WORK="$src"
+        return 0
+    fi
+
+    # Readable, or readable through the normal one-time sudo path.
+    r="$(readable_nebula_config "$src")" || r=""
+    if [[ -z "$r" ]]; then
+        log_error "Cannot read Nebula config at $src (permission denied)."
+        log_info "Approve the temporary sudo read when prompted, or point NEBULA_LOCAL_CONFIG at a readable copy."
         return 1
     fi
+    if [[ "$r" == "$src" ]]; then
+        CONFIG_EDIT_WORK="$(mktemp)" || return 1
+        cp "$r" "$CONFIG_EDIT_WORK" || { rm -f "$CONFIG_EDIT_WORK"; CONFIG_EDIT_WORK=""; return 1; }
+    else
+        CONFIG_EDIT_WORK="$r"      # readable_nebula_config already made a copy
+    fi
+    CONFIG_EDIT_TMP="$CONFIG_EDIT_WORK"
+    CONFIG_EDIT_HASH="$(sha256sum "$CONFIG_EDIT_WORK" 2>/dev/null | awk '{print $1}')"
+    log_info "Editing a working copy; changes are written back to $src when you finish."
+    debug_info "edit: working copy $CONFIG_EDIT_WORK (source $src)"
+    return 0
+}
+
+# Write the working copy back (if needed), keeping a timestamped backup.
+config_edit_commit() {
+    local src="${CONFIG_EDIT_SOURCE:-}" work="${CONFIG_EDIT_WORK:-}" bak now
+    [[ -n "$src" && -n "$work" ]] || return 0
+
+    if [[ "$work" == "$src" ]]; then
+        log_success "Updated $src"
+        CONFIG_EDIT_SOURCE=""; CONFIG_EDIT_WORK=""; CONFIG_EDIT_TMP=""; CONFIG_EDIT_HASH=""
+        return 0
+    fi
+
+    now="$(sha256sum "$work" 2>/dev/null | awk '{print $1}')"
+    if [[ -n "$CONFIG_EDIT_HASH" && "$now" == "$CONFIG_EDIT_HASH" ]]; then
+        rm -f "$work"
+        log_info "No changes to save."
+        CONFIG_EDIT_SOURCE=""; CONFIG_EDIT_WORK=""; CONFIG_EDIT_TMP=""; CONFIG_EDIT_HASH=""
+        return 0
+    fi
+
+    bak="${src}.bak.$(date +%Y%m%d-%H%M%S)"
+    if ! elevate_why "back up the Nebula config before saving changes" cp -p "$src" "$bak"; then
+        log_error "Could not back up $src; the config was not changed."
+        log_info "Your edits are preserved at $work."
+        return 1
+    fi
+    if ! elevate_why "write the edited Nebula config to $src" cp "$work" "$src"; then
+        log_error "Could not write $src; the original is unchanged."
+        log_info "Your edits are preserved at $work."
+        return 1
+    fi
+    _nebula_info_derive "$work" "$src" >/dev/null 2>&1 || true
+    rm -f "$work"
+    log_success "Updated $src (backup: $bak)"
+    CONFIG_EDIT_SOURCE=""; CONFIG_EDIT_WORK=""; CONFIG_EDIT_TMP=""; CONFIG_EDIT_HASH=""
+    return 0
+}
+
+config_edit_cancel() {
+    if [[ -n "${CONFIG_EDIT_WORK:-}" && "${CONFIG_EDIT_WORK}" != "${CONFIG_EDIT_SOURCE:-}" ]]; then
+        rm -f "$CONFIG_EDIT_WORK"
+    fi
+    CONFIG_EDIT_SOURCE=""; CONFIG_EDIT_WORK=""; CONFIG_EDIT_TMP=""; CONFIG_EDIT_HASH=""
+}
+
+manage_firewall() {
+    local source="${NEBULA_DIR:-/etc/nebula}/config.yml"
+    [[ -f "$source" ]] || { log_error "Config file not found: $source"; return 1; }
+    require_yq_v4 || return 1
+    config_edit_begin "$source" || return 1
+    local config_file="$CONFIG_EDIT_WORK"
+    FIREWALL_CONFIG_EDIT="$config_file"
     while true; do
         show_menu_header "$MENU_PATH" "Config" "Firewall"
         echo -e "        ${BOLD}${YELLOW}1.${RESET} $(get_icon 'left-arrow')Configure Inbound Rules ${GREEN}(Default Action: ${RED}$(yq -r ".firewall.inbound_action" "$config_file" 2>/dev/null)${GREEN})${RESET}"
@@ -1903,10 +2008,13 @@ manage_firewall() {
             *) log_error "Invalid option. Please choose again." ;;
         esac
     done
+    FIREWALL_CONFIG_EDIT=""
+    config_edit_commit || return 1
+    check_nebula_config "$source" "error"
 }
 
 configure_firewall_settings() {
-    local config_file="$NEBULA_DIR/config.yml"
+    local config_file="${FIREWALL_CONFIG_EDIT:-${NEBULA_DIR:-/etc/nebula}/config.yml}"
     echo -e "\n$(show_status 'info') ${YELLOW}Configuring ${CYAN}general firewall settings${RESET}. Press Enter to skip a setting."
     local key current input
     for key in outbound_action inbound_action; do
@@ -1923,7 +2031,7 @@ configure_firewall_settings() {
 }
 
 configure_inbound_rules() {
-    local config_file="$NEBULA_DIR/config.yml"
+    local config_file="${FIREWALL_CONFIG_EDIT:-${NEBULA_DIR:-/etc/nebula}/config.yml}"
     local table_width=115
     while true; do
         echo -e "\n${CYAN}Current Inbound Rules:                                                                       ${GREEN}[Default Action: ${RED}$(yq -r ".firewall.inbound_action" "$config_file")${GREEN}]${RESET}"
@@ -1962,7 +2070,7 @@ configure_inbound_rules() {
 }
 
 configure_outbound_rules() {
-    local config_file="$NEBULA_DIR/config.yml"
+    local config_file="${FIREWALL_CONFIG_EDIT:-${NEBULA_DIR:-/etc/nebula}/config.yml}"
     local table_width=115
     while true; do
         echo -e "\n${CYAN}Current Outbound Rules:                                                                       ${GREEN}[Default Action: ${RED}$(yq -r ".firewall.outbound_action" "$config_file")${GREEN}]${RESET}"
@@ -2064,14 +2172,17 @@ _edit_firewall_rule() {
             [[ -n "$g" ]] && yq -i -y "${prefix}[${index}].groups += [\"$g\"]" "$config_file"
         done
     fi
-    check_nebula_config "$NEBULA_DIR/config.yml" "error"
+    check_nebula_config "$config_file" "error" "${CONFIG_EDIT_SOURCE:-$config_file}"
     return 0
 }
 
 edit_nebula_config() {
-    local config_file="${NEBULA_DIR:-/etc/nebula}/config.yml"
-    [[ -f "$config_file" ]] || { log_error "Config file not found: $config_file"; return 1; }
-    echo -e "$(show_status 'info') ${YELLOW}Configuring ${CYAN}$config_file${RESET}. Press Enter to skip a setting."
+    local source="${NEBULA_DIR:-/etc/nebula}/config.yml"
+    [[ -f "$source" ]] || { log_error "Config file not found: $source"; return 1; }
+    require_yq_v4 || return 1
+    config_edit_begin "$source" || return 1
+    local config_file="$CONFIG_EDIT_WORK"
+    echo -e "$(show_status 'info') ${YELLOW}Configuring ${CYAN}$source${RESET}. Press Enter to skip a setting."
     local key current input
     for key in ca cert key disconnect_invalid; do
         current=$(yq -r ".pki.$key" "$config_file")
@@ -2206,8 +2317,9 @@ edit_nebula_config() {
     read -rp "$(printf "${YELLOW}tun.dev${RESET} [${CYAN}%s${RESET}]: " "$current")" input
     [[ -n "$input" ]] && yq -i -y ".tun.dev = \"$input\"" "$config_file"
 
-    log_success "Finished updating ${CYAN}$config_file${RESET}."
-    check_nebula_config "$NEBULA_DIR/config.yml" "error"
+    log_success "Finished updating ${CYAN}$source${RESET}."
+    config_edit_commit || return 1
+    check_nebula_config "$source" "error"
 }
 
 manage_configuration() {

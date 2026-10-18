@@ -64,6 +64,7 @@ re-execs the real entrypoint.
 - `elevate() { [[ $EUID -eq 0 ]] && "$@" || sudo "$@"; }` — the single choke point for privilege escalation.
 - `path_requires_root()` classifies a target path; `ensure_dir()` elevates **only** when the nearest existing parent isn't writable by you.
 - Everything else (printing/signing certs, zipping bundles, pings, `iperf3`, `ss`) runs as you.
+- **Editing a service-owned `config.yml`** (Configuration ▸ Edit Config / Edit Firewall) reads it through the same one-time-sudo path, edits a **user-owned working copy** with `yq`, and saves once at the end through `elevate()` with a timestamped `.bak.*` backup. `yq` never touches a file you cannot read/write.
 - Reading a **service-owned** Nebula config (`/etc/nebula/config.yml`, often owned by `nobody`) goes through `readable_nebula_config()` for **explicit actions** (`diag`, Validate Config, `import`, client bundling): it uses cached `sudo` if available, otherwise asks once — showing the **reason and exact command** — before elevating. The prompt is tied to stderr (not stdout), so capturing command output never suppresses it. The derived values (TUN dev, listen host/port, lighthouse role and whether `lighthouse.hosts`/`static_host_map` are present) are cached in `$XDG_CACHE_HOME/nebula-manager/system-info`, so the **startup header needs no elevation on later runs** and no longer tells you to run the whole tool with `sudo`. If no cache exists yet, the header detects the `nebula*` interface itself **and warns that the config (and therefore the lighthouse/static_host_map) could not be verified**, pointing you to **Diagnostics** or **Configuration ▸ Validate Config** to authorize the first read. Once readable, the header flags missing `lighthouse.hosts`/`static_host_map` directly. Cached values are keyed by the **real** config path even when a temporary readable copy was used, so the next startup uses them. If the unprivileged `nebula -test` then fails because the referenced `pki.key`/`pki.crt` files are also service-owned, **Validate Config offers a one-time elevated re-test** (or uses already-cached sudo credentials) instead of reporting a misleading “invalid config”.
 
 Privileged actions (the only ones that use `sudo`):
@@ -118,7 +119,7 @@ Nebula Manager checks for required tools on first run and prints an install
 command if any are missing (skippable via `ignore_dependency_check` in the conf).
 
 **Required:** `gawk` (`awk`), `curl`, `findutils` (`find`), `grep`, `jq`, `sed`, `sudo`, `systemd` (`systemctl`), `tar`, `wget`, `coreutils` (`sha256sum`), `iputils-ping`
-**Optional:** `yq` — **mikefarah v4 only**, used by the firewall editor (Fedora `yq`, Arch `go-yq`, or the upstream binary); `iperf3` (bandwidth tests); `whiptail` (graphical file/dir picker; menus are plain by default); `zip` (client bundles; falls back to `tar.gz`)
+**Optional:** `yq` — **mikefarah v4 only**, used by the config and firewall editors (Fedora `yq`, Arch `go-yq`, or the upstream binary); `iperf3` (bandwidth tests); `whiptail` (graphical file/dir picker; menus are plain by default); `zip` (client bundles; falls back to `tar.gz`)
 
 > 📖 Per-distribution manuals (Ubuntu/Debian/Mint, Fedora/RHEL, Arch/CachyOS,
 > including SELinux and firewall notes): **[docs/linux-distros.md](docs/linux-distros.md)**.
@@ -302,7 +303,7 @@ headless subcommands for scripting — see *Expert / scriptable* below.
 | **Setup** | shows the **detected state** (config, Nebula service, cert workspace), then: import/update, create, browse, edit, delete `nebula-manager.conf`, manage servers, pick the certificate workspace |
 | **Servers** | list / add / enable-disable / remove `[server.*]` entries |
 | **Certificates** | list, create CA, sign, view, expiry, **bundle/export** (pick from a list), revoke, switch workspace |
-| **Configuration** | validate / edit Nebula `config.yml`, edit firewall rules |
+| **Configuration** | validate / edit Nebula `config.yml` (service-owned files are edited on a working copy and saved once with a timestamped backup), edit firewall rules |
 | **Connectivity** | ping every cert IP; optional `iperf3` test |
 | **Diagnostics** | TUN IP, listening UDP socket, certificate expiry; reads a service-owned config once with temporary sudo and caches the header values |
 | **Benchmarks** | `iperf3` server / client |
@@ -602,6 +603,7 @@ What it covers:
 | `tests/test_debug.sh` | `DEBUG` levels: `learn` prints Nebula CLI commands to stderr only, `warn` hides info, stdout stays clean |
 | `tests/test_bundle.sh` | client export: candidate listing, substring/ambiguous matching, default output dir, TUI picker, mode 0600 |
 | `tests/test_client_config.sh` | generated client template: real static_host_map/lighthouse/punchy/listen/tun/firewall from the local config, `[server.*]` fallback, and missing-value warnings |
+| `tests/test_edit.sh` | privileged-safe config editing: working copy for read-only/unreadable configs, elevated write-back, timestamped backup, and no-op when nothing changed |
 | `tests/pki.bats` | BATS mirror of the core unprivileged-PKI guarantees |
 
 Requirements: `bash`, `nebula-cert` (for PKI tests; auto-skipped otherwise).
@@ -761,7 +763,7 @@ is *already running*, discover the installation and offer to generate
   nebula-manager's tools on **Ubuntu/Debian/Linux Mint**, **Fedora/RHEL**, and
   **Arch Linux/CachyOS**. Covers distro package contents, service/config paths,
   SELinux (Fedora), host firewalls (ufw/firewalld/nftables), upstream binaries,
-  and the **yq v4** requirement for the firewall editor.
+  and the **yq v4** requirement for the config/firewall editors.
 
 ---
 

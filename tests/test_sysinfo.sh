@@ -124,14 +124,23 @@ chmod +x "$SANDBOX/elevbin/sudo" "$SANDBOX/elevbin/nebula"
 ELEV_CFG="$SANDBOX/elev/config.yml"
 mkdir -p "$(dirname "$ELEV_CFG")"
 printf 'listen:\n  port: 4242\n' > "$ELEV_CFG"
-chmod 000 "$ELEV_CFG"
+chmod 644 "$ELEV_CFG"
 OLD_PATH="$PATH"; OLD_BIN="${NEBULA_BIN_PATH:-}"
 export PATH="$SANDBOX/elevbin:$PATH" NEBULA_BIN_PATH="$SANDBOX/elevbin"
 out="$(check_nebula_config "$ELEV_CFG" 2>&1)"; rc=$?
-assert_eq "elevated validation succeeds" "$rc" "0"
+assert_eq "readable config + private key: elevated re-test succeeds" "$rc" "0"
 assert_contains "offers the elevated re-test" "$out" "Re-testing with temporary sudo"
 assert_contains "reports valid after elevation" "$out" "Nebula config is valid"
-chmod 644 "$ELEV_CFG"
+
+# An unreadable config is known to be service-owned: validate elevated directly.
+DIRECT_CFG="$SANDBOX/elev/direct.yml"
+printf 'listen:\n  port: 4242\n' > "$DIRECT_CFG"
+chmod 000 "$DIRECT_CFG"
+out="$(check_nebula_config "$DIRECT_CFG" 2>&1)"; rc=$?
+assert_eq "unreadable config validates directly elevated" "$rc" "0"
+assert_contains "direct elevated validation is announced" "$out" "Validating with temporary sudo"
+assert_contains "direct elevated validation reports valid" "$out" "Nebula config is valid"
+chmod 644 "$DIRECT_CFG"
 export PATH="$OLD_PATH"
 if [[ -n "$OLD_BIN" ]]; then export NEBULA_BIN_PATH="$OLD_BIN"; else unset NEBULA_BIN_PATH; fi
 
