@@ -391,27 +391,41 @@ _int_to_ip4() {
     printf '%s.%s.%s.%s' "$(( (n>>24)&255 ))" "$(( (n>>16)&255 ))" "$(( (n>>8)&255 ))" "$(( n&255 ))"
 }
 
-# cert_domain_suffix <cert_dir> : the most common ".domain" suffix among existing
-# non-CA cert names (e.g. ".ulno.mesh" from ulno-framework.ulno.mesh, vps.ulno.mesh).
-cert_domain_suffix() {
+# cert_domain_list <cert_dir> : distinct domains among non-CA cert names, one
+# per line as "<domain>\t<count>", ordered by count (desc) then most-recent
+# notBefore. The domain is printed WITHOUT the leading dot (e.g. theprof.mesh).
+cert_domain_list() {
     local cert_dir="$1" bin bp
     bin="$(pki_cert_bin 2>/dev/null)" || return 0
     bp="$(dirname "$bin")"
-    local -A counts=() cert json name dom
+    local -A counts=() latest=()
+    local cert json name dom nb epoch
     for cert in "$cert_dir"/*.crt; do
         [[ -f "$cert" ]] || continue
         json="$(nebula_cert_json "$bp" "$cert" 2>/dev/null)" || continue
         [[ "$(jq -r '.details.isCa // false' <<<"$json" 2>/dev/null)" == "true" ]] && continue
         name="$(jq -r '.details.name // ""' <<<"$json" 2>/dev/null)"
         [[ "$name" == *.* ]] || continue
-        dom=".${name#*.}"
+        dom="${name#*.}"
+        [[ -n "$dom" ]] || continue
+        nb="$(jq -r '.details.notBefore // ""' <<<"$json" 2>/dev/null)"
+        epoch="$(date -d "$nb" +%s 2>/dev/null || echo 0)"
         counts["$dom"]=$(( ${counts["$dom"]:-0} + 1 ))
+        (( epoch > ${latest["$dom"]:-0} )) && latest["$dom"]="$epoch"
     done
-    local best="" bestn=0 k
-    for k in "${!counts[@]}"; do
-        (( ${counts["$k"]} > bestn )) && { best="$k"; bestn="${counts[$k]}"; }
-    done
-    [[ -n "$best" ]] && printf '%s' "$best"
+    local d
+    for d in "${!counts[@]}"; do
+        printf '%s\t%s\t%s\n' "$d" "${counts[$d]}" "${latest[$d]:-0}"
+    done | sort -t$'\t' -k2,2nr -k3,3nr -k1,1
+    return 0
+}
+
+# cert_domain_suffix <cert_dir> : the most common ".domain" suffix (with the dot),
+# e.g. ".ulno.mesh" from ulno-framework.ulno.mesh, vps.ulno.mesh.
+cert_domain_suffix() {
+    local best
+    best="$(cert_domain_list "$1" | head -n1 | cut -f1)"
+    [[ -n "$best" ]] && printf '.%s' "$best"
     return 0
 }
 
@@ -496,6 +510,34 @@ generate_nebula_cert() {
         read -p "$(show_status 'question') $name_prompt" cert_gen_name || { log_info "Canceled."; return 1; }
         [[ -z "$cert_gen_name" && -n "$suggested_name" ]] && cert_gen_name="$suggested_name"
     done
+
+    # If the user typed a bare name but existing certs use a mesh domain, offer to
+    # append one. Never silently: confirm a single domain, or let them pick from
+    # several (with "keep as-is" always available).
+    if [[ "$cert_gen_name" != *.* ]]; then
+        local -a dom_names=() dom_counts=()
+        local d c _nb
+        while IFS=$'\t' read -r d c _nb; do
+            [[ -n "$d" ]] && { dom_names+=("$d"); dom_counts+=("$c"); }
+        done < <(cert_domain_list "$cert_dir")
+        if (( ${#dom_names[@]} == 1 )); then
+            if ui_yesno "Certificate domain" "Existing certs use '.${dom_names[0]}'. Append it to '${cert_gen_name}'?"; then
+                cert_gen_name="${cert_gen_name}.${dom_names[0]}"
+            fi
+        elif (( ${#dom_names[@]} > 1 )); then
+            local -a dmenu=()
+            local i
+            for i in "${!dom_names[@]}"; do
+                dmenu+=( "d$i" "${dom_names[i]} (${dom_counts[i]} certs)" )
+            done
+            dmenu+=( "keep" "Keep '${cert_gen_name}' as-is (no domain)" )
+            local dchoice
+            dchoice="$(ui_menu "Certificate domain" "'${cert_gen_name}' has no domain. Which domain should it get?" "${dmenu[@]}")" || dchoice="keep"
+            case "$dchoice" in
+                d*) cert_gen_name="${cert_gen_name}.${dom_names[${dchoice#d}]}" ;;
+            esac
+        fi
+    fi
 
     if [[ -f "$cert_dir/$cert_gen_name.crt" ]]; then
         log_info "Certificate $cert_gen_name already exists in $cert_dir"
@@ -1000,9 +1042,10 @@ pki_ca_cli() {
 
 pki_sign_cli() {
     local name="" ip="" groups="" subnets="" duration="" cert_dir="" in_pub="" qr=""
+    local name_given=0
     while (($#)); do
         case "$1" in
-            --name|-n) shift; name="$1" ;;
+            --name|-n) shift; name="$1"; name_given=1 ;;
             --ip|-i) shift; ip="$1" ;;
             --groups|-g) shift; groups="$1" ;;
             --subnets|-s) shift; subnets="$1" ;;
@@ -1012,7 +1055,7 @@ pki_sign_cli() {
             --qr|--out-qr) shift; qr="$1" ;;
             --) shift; break ;;
             *)
-                if [[ -z "$name" ]]; then name="$1"
+                if [[ -z "$name" ]]; then name="$1"; name_given=1
                 elif [[ -z "$ip" ]]; then ip="$1"
                 else log_warn "Ignoring extra argument: $1"; fi
                 ;;
@@ -1027,6 +1070,15 @@ pki_sign_cli() {
     if [[ -z "$name" ]]; then
         name="$(suggest_cert_name "$cert_dir")"
         [[ -n "$name" ]] && log_info "Using suggested name: ${CYAN}$name${RESET}"
+    fi
+    # A bare name while existing certs use a domain: hint, never change silently.
+    if (( name_given )) && [[ -n "$name" && "$name" != *.* ]]; then
+        local first_dom
+        first_dom="$(cert_domain_list "$cert_dir" | head -n1 | cut -f1)"
+        if [[ -n "$first_dom" ]]; then
+            log_warn "Certificate name '$name' has no domain; your other certs use '.$first_dom'."
+            log_info "Re-run with --name '$name.$first_dom' if that is what you meant (not changed automatically)."
+        fi
     fi
     if [[ -z "$ip" ]]; then
         ip="$(suggest_next_cert_ip "$cert_dir")"

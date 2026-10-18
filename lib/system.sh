@@ -273,6 +273,8 @@ check_nebula_config() {
     fi
     local cfg="$r" tmp=""
     [[ "$cfg" != "$config_file" ]] && tmp="$cfg"
+    # Refresh the header cache from this successful read.
+    _nebula_info_derive "$cfg" >/dev/null 2>&1 || true
 
     echo -e "$(show_status 'info') ${CYAN}Testing Nebula config: ${config_file}${RESET}"
     local output status
@@ -761,8 +763,8 @@ read_nebula_config() {
     # (skipped when NEBULA_NO_PROMPT=1, e.g. during menu-state detection).
     if [[ "${NEBULA_NO_PROMPT:-0}" != 1 && -t 0 && -t 1 ]] && command -v sudo >/dev/null 2>&1; then
         local a
-        read -rp "$(show_status 'question') ${config_file} is not readable. Read it with sudo? [y/N]: " a
-        [[ "$a" =~ ^[Yy] ]] && { elevate_why "read $config_file" cat "$config_file" && return 0; }
+        read -rp "$(show_status 'question') ${config_file} is service-owned and not readable. Read it once with temporary sudo? [y/N]: " a
+        [[ "$a" =~ ^[Yy] ]] && { elevate_why "read the Nebula service config $config_file" cat "$config_file" && return 0; }
     fi
     return 1
 }
@@ -780,6 +782,90 @@ readable_nebula_config() {
     rm -f "$tmp"; return 1
 }
 
+###################################################################
+############### Nebula config-derived info cache ##################
+###################################################################
+# The Nebula config is commonly owned by the service user (e.g. nobody) and is
+# not readable by us. Cache the few values the startup header needs in a
+# user-owned file, so later runs show them without needing sudo. The cache is
+# refreshed whenever the config is read (import, diag, validate) or readable.
+
+nebula_info_cache_file() {
+    printf '%s' "${XDG_CACHE_HOME:-$HOME/.cache}/nebula-manager/system-info"
+}
+
+# _nebula_info_save <source_config> <tun> <bind_host> <bind_port> <is_lh>
+_nebula_info_save() {
+    local cfg="$1" tun="$2" host="$3" port="$4" is_lh="$5"
+    local f; f="$(nebula_info_cache_file)"
+    mkdir -p "$(dirname "$f")" 2>/dev/null || return 0
+    {
+        printf 'config=%s\n'    "$cfg"
+        printf 'tun=%s\n'       "$tun"
+        printf 'bind_host=%s\n' "$host"
+        printf 'bind_port=%s\n' "$port"
+        printf 'is_lh=%s\n'     "$is_lh"
+    } > "$f" 2>/dev/null || return 0
+}
+
+# _nebula_info_load : populate NEBULA_INFO_* from the cache; 1 if absent/empty.
+_nebula_info_load() {
+    local f; f="$(nebula_info_cache_file)"
+    [[ -f "$f" ]] || return 1
+    NEBULA_INFO_CONFIG="" NEBULA_INFO_TUN="" NEBULA_INFO_BIND_HOST=""
+    NEBULA_INFO_BIND_PORT="" NEBULA_INFO_IS_LH=""
+    local k v
+    while IFS='=' read -r k v; do
+        case "$k" in
+            config)    NEBULA_INFO_CONFIG="$v" ;;
+            tun)       NEBULA_INFO_TUN="$v" ;;
+            bind_host) NEBULA_INFO_BIND_HOST="$v" ;;
+            bind_port) NEBULA_INFO_BIND_PORT="$v" ;;
+            is_lh)     NEBULA_INFO_IS_LH="$v" ;;
+        esac
+    done < "$f" 2>/dev/null
+    [[ -n "$NEBULA_INFO_TUN" || -n "$NEBULA_INFO_BIND_PORT" || -n "$NEBULA_INFO_IS_LH" ]]
+}
+
+# _nebula_info_fresh <config_file> : cache is for THIS config and not older.
+_nebula_info_fresh() {
+    local cfg="$1" f; f="$(nebula_info_cache_file)"
+    [[ -f "$f" ]] || return 1
+    local cached_cfg
+    cached_cfg="$(awk -F= '$1 == "config" { sub(/^config=/, ""); print; exit }' "$f" 2>/dev/null)"
+    [[ "$cached_cfg" == "$cfg" ]] || return 1
+    [[ -f "$cfg" ]] || return 0
+    local ctm mtm
+    ctm="$(stat -c %Y "$cfg" 2>/dev/null)" || return 0
+    mtm="$(stat -c %Y "$f" 2>/dev/null)" || return 1
+    (( mtm >= ctm ))
+}
+
+# _nebula_info_derive <readable_config> : parse the values, refresh the cache,
+# and print "tun|bind_host|bind_port|is_lh".
+_nebula_info_derive() {
+    local cfg="$1" tun host port is_lh
+    tun="$(iface_from_config "$cfg")"
+    host="$(awk '/listen:/,/port:/{if($1~/^host:/){gsub(/\r|\n|"/,"",$2);print $2}}' "$cfg")"
+    port="$(awk '/listen:/,/port:/{if($1~/^port:/){gsub(/\r|\n|"/,"",$2);print $2}}' "$cfg")"
+    [[ -z "$host" ]] && host="0.0.0.0"
+    if [[ -z "$port" || "$port" == "0" ]]; then
+        local _p _s
+        read -r _p _s _ < <(resolve_listen_port "$cfg")
+        [[ -n "$_p" ]] && port="$_p"
+    fi
+    if grep -q '^ *am_lighthouse: true' "$cfg"; then is_lh="true"; else is_lh="false"; fi
+    _nebula_info_save "$cfg" "$tun" "$host" "$port" "$is_lh"
+    printf '%s|%s|%s|%s' "$tun" "$host" "$port" "$is_lh"
+}
+
+# Guess the Nebula TUN interface/address from the system (no config needed).
+_nebula_iface_guess() {
+    command -v ip >/dev/null 2>&1 || return 1
+    ip -o -4 addr show 2>/dev/null | awk '
+        $2 ~ /^nebula/ && $3 == "inet" { print $2 " " $4; exit }'
+}
+
 # Function to show system information related to the Nebula service
 show_system_info() {
     local service_name; service_name=$(basename "${NEBULA_SERVICE:-nebula.service}")
@@ -795,42 +881,44 @@ show_system_info() {
     echo -e "$(show_status 'success') ${BOLD}${YELLOW}Service: ${RESET}$(print_service_status "$service_name")"
     echo -e "$(show_status 'success') ${BOLD}${YELLOW}Uptime:${RESET} $(date -ud@$(($(date +%s) - $(date -d"$(systemctl show "$service_name" --property=ActiveEnterTimestamp | cut -d'=' -f2)" +%s))) +%T | awk -F: '{print $1" hrs, "$2" min, "$3" sec"}')"
 
-    # The config is usually owned by the service user (nobody). Read a copy,
-    # asking for elevation (with the reason shown) only when needed.
-    local cfg="" tmp_cfg=""
-    if [[ -n "${NEBULA_DIR:-}" && -f "$nebula_config" ]]; then
-        local r; r="$(readable_nebula_config "$nebula_config")" || r=""
-        if [[ -n "$r" ]]; then
-            cfg="$r"
-            [[ "$cfg" != "$nebula_config" ]] && tmp_cfg="$cfg"
-        fi
+    local tun="" host="" port="" is_lh="" src=""
+
+    # 1) A readable config: use it live and refresh the cache.
+    if [[ -n "${NEBULA_DIR:-}" && -f "$nebula_config" && -r "$nebula_config" ]]; then
+        local derived; derived="$(_nebula_info_derive "$nebula_config")"
+        IFS='|' read -r tun host port is_lh <<< "$derived"
+        src="live"
+    # 2) Otherwise a fresh cache avoids any privileged read (and any sudo prompt).
+    elif _nebula_info_fresh "$nebula_config" && _nebula_info_load; then
+        tun="$NEBULA_INFO_TUN"; host="$NEBULA_INFO_BIND_HOST"
+        port="$NEBULA_INFO_BIND_PORT"; is_lh="$NEBULA_INFO_IS_LH"; src="cache"
+    # 3) A stale cache is still better than nothing, but only for the same config
+    #    (multi-server safety: never show another server's values).
+    elif _nebula_info_load && [[ "$NEBULA_INFO_CONFIG" == "$nebula_config" ]]; then
+        tun="$NEBULA_INFO_TUN"; host="$NEBULA_INFO_BIND_HOST"
+        port="$NEBULA_INFO_BIND_PORT"; is_lh="$NEBULA_INFO_IS_LH"; src="cache"
     fi
 
-    if [[ -z "$cfg" ]]; then
-        echo -e "$(show_status 'warning') ${BOLD}${YELLOW}Network:${RESET} ${GRAY}(config not readable - run with sudo or grant read access)${RESET}"
+    if [[ -n "$tun" || -n "$port" || -n "$is_lh" ]]; then
+        local ip_addr; ip_addr="$(iface_ip "$tun" 2>/dev/null || true)"
+        local note=""
+        [[ "$src" == "cache" ]] && note=" ${GRAY}[cached]${RESET}"
+        echo -e "$(show_status 'success') ${BOLD}${YELLOW}Network:${RESET} ${ip_addr:-?} - ${tun:-?} (${host:-?}:${port:-?})$note"
+        echo -e -n "$(show_status 'success') ${BOLD}${YELLOW}State:${RESET} "
+        [[ "$is_lh" == "true" ]] && echo -e "Lighthouse" || echo -e "Client"
         return 0
     fi
 
-    local interface ip_addr bind_host bind_port port_note=""
-    interface=$(iface_from_config "$cfg")
-    ip_addr=$(iface_ip "$interface")
-    bind_host=$(awk '/listen:/,/port:/{if($1~/^host:/){gsub(/\r|\n|"/,"",$2);print $2}}' "$cfg")
-    bind_port=$(awk '/listen:/,/port:/{if($1~/^port:/){gsub(/\r|\n|"/,"",$2);print $2}}' "$cfg")
-    [[ -z "$bind_host" ]] && bind_host="0.0.0.0"
-    # listen.port: 0 means the OS assigns the port; show the effective one.
-    if [[ -z "$bind_port" || "$bind_port" == "0" ]]; then
-        local _p _s
-        read -r _p _s _ < <(resolve_listen_port "$cfg")
-        [[ -n "$_p" ]] && { bind_port="$_p"; port_note=" [$_s]"; }
+    # 4) Last resort: guess the interface/IP from the system (no config needed).
+    local guess; guess="$(_nebula_iface_guess)"
+    if [[ -n "$guess" ]]; then
+        local gif="${guess%% *}" gip="${guess#* }"
+        echo -e "$(show_status 'success') ${BOLD}${YELLOW}Network:${RESET} ${gip%%/*} - $gif ${GRAY}(port not shown; see Diagnostics)${RESET}"
+        return 0
     fi
-    echo -e "$(show_status 'success') ${BOLD}${YELLOW}Network:${RESET} $ip_addr - $interface ($bind_host:$bind_port)$port_note"
-    echo -e -n "$(show_status 'success') ${BOLD}${YELLOW}State:${RESET} "
-    if grep -q '^ *am_lighthouse: true' "$cfg"; then
-        echo -e "Lighthouse"
-    else
-        echo -e "Client"
-    fi
-    [[ -n "$tmp_cfg" ]] && rm -f "$tmp_cfg"
+
+    # 5) Nothing available: a notice (not an error) pointing at the in-app action.
+    echo -e "$(show_status 'info') ${BOLD}${YELLOW}Network:${RESET} ${GRAY}not shown yet - choose Diagnostics to read the service config once with temporary sudo${RESET}"
     return 0
 }
 

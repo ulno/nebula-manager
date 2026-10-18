@@ -70,4 +70,36 @@ out="$("$NM" sign --cert-dir "$empty" 2>&1)"; rc=$?
 assert_eq "sign fails cleanly without a CA/suggestions" "$rc" "2"
 assert_contains "explains the failure" "$out" "Could not derive"
 
+# --- CLI: a bare --name is hinted, never changed silently ---
+out="$("$NM" sign --cert-dir "$keys" --name barecli --ip 10.100.0.70/24 2>&1)"; rc=$?
+assert_eq "bare-name CLI sign succeeds" "$rc" "0"
+assert_contains "CLI hints about the missing domain" "$out" "has no domain"
+assert_contains "CLI says the name is not changed" "$out" "not changed automatically"
+assert_file "CLI keeps the user's bare name" "$keys/barecli.crt"
+
+# --- multiple domains: list is ordered by usage; TUI offers a menu ---
+SIGN_NAME="x.other.demo" SIGN_IP="10.100.0.50/24" CERT_DIR="$keys" pki_sign >/dev/null 2>&1
+assert_eq "domain list top is the most common" "$(cert_domain_list "$keys" | head -n1 | cut -f1)" "mesh.demo"
+assert_contains "domain list includes the second domain" "$(cert_domain_list "$keys" | cut -f1)" "other.demo"
+
+# TUI: bare name -> menu; choosing 1 appends the most common domain
+printf 'multi\n1\n10.100.0.61/24\n\nn\n\n' | generate_nebula_cert >/dev/null 2>&1
+assert_file "TUI multi-domain menu appends the chosen domain" "$keys/multi.mesh.demo.crt"
+assert_no_file "TUI multi-domain did not keep the bare name" "$keys/multi.crt"
+
+# --- a store with exactly one domain: confirm (yes) or keep (no) the bare name ---
+one="$SANDBOX/one"; mkdir -p "$one"
+CA_NAME="OneCA" CERT_DIR="$one" pki_ca_create >/dev/null 2>&1
+SIGN_NAME="a.solo.demo" SIGN_IP="10.77.0.1/24" CERT_DIR="$one" pki_sign >/dev/null 2>&1
+SIGN_NAME="b.solo.demo" SIGN_IP="10.77.0.2/24" CERT_DIR="$one" pki_sign >/dev/null 2>&1
+
+export CERT_DIR_OVERRIDE="$one"
+printf 'newhost\ny\n10.77.0.9/24\n\nn\n\n' | generate_nebula_cert >/dev/null 2>&1
+assert_file "TUI confirms and appends a single domain" "$one/newhost.solo.demo.crt"
+assert_no_file "TUI does not keep the bare name when confirmed" "$one/newhost.crt"
+
+printf 'barehost\nn\n10.77.0.10/24\n\nn\n\n' | generate_nebula_cert >/dev/null 2>&1
+assert_file "TUI keeps a bare name when declined" "$one/barehost.crt"
+export CERT_DIR_OVERRIDE="$keys"
+
 harness_summary

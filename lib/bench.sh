@@ -277,6 +277,8 @@ diagnostics_view() {
         cfg_file="$(readable_nebula_config "$configured_config")" || cfg_file=""
         [[ -n "$cfg_file" && "$cfg_file" != "$configured_config" ]] && tmp_cfg="$cfg_file"
     fi
+    # A successful (possibly elevated) read refreshes the startup-header cache.
+    [[ -n "$cfg_file" ]] && { _nebula_info_derive "$cfg_file" >/dev/null 2>&1 || true; }
 
     echo -e "${BOLD}${CYAN}Nebula Manager diagnostics${RESET}"
     echo -e "${CYAN}------------------------------------------------------------${RESET}"
@@ -351,6 +353,7 @@ diagnostics_view() {
     $found || echo -e "    ${ORANGE}no certificates found in $certs_dir${RESET}"
 
     echo -e "${CYAN}------------------------------------------------------------${RESET}"
+    [[ -n "$cfg_file" ]] && echo -e "${GRAY}note: these values are cached for the startup header (no sudo needed next time).${RESET}"
     [[ -n "$tmp_cfg" ]] && rm -f "$tmp_cfg"
     return 0
 }

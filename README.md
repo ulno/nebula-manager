@@ -64,7 +64,7 @@ re-execs the real entrypoint.
 - `elevate() { [[ $EUID -eq 0 ]] && "$@" || sudo "$@"; }` — the single choke point for privilege escalation.
 - `path_requires_root()` classifies a target path; `ensure_dir()` elevates **only** when the nearest existing parent isn't writable by you.
 - Everything else (printing/signing certs, zipping bundles, pings, `iperf3`, `ss`) runs as you.
-- Reading a **service-owned** Nebula config (`/etc/nebula/config.yml`, often owned by `nobody`) goes through `readable_nebula_config()`: it uses cached `sudo` if available, otherwise asks once — showing the **reason and exact command** — before elevating. Used by the startup header, `diag`, and `check_nebula_config`.
+- Reading a **service-owned** Nebula config (`/etc/nebula/config.yml`, often owned by `nobody`) goes through `readable_nebula_config()` for **explicit actions** (`diag`, Validate Config, `import`): it uses cached `sudo` if available, otherwise asks once — showing the **reason and exact command** — before elevating. The derived values (TUN dev, listen host/port, lighthouse role) are cached in `$XDG_CACHE_HOME/nebula-manager/system-info`, so the **startup header needs no elevation on later runs** and no longer tells you to run the whole tool with `sudo`. If no cache exists yet, the header detects the `nebula*` interface itself and points you to **Diagnostics** to authorize the first read.
 
 Privileged actions (the only ones that use `sudo`):
 `mkdir/chmod/write under system paths`, `mkdir -p /etc/nebula` + template download, systemd (`daemon-reload`, `enable`, `start/stop/restart/reload`), installing binaries into `bin_path`, and the self-update copy.
@@ -177,6 +177,12 @@ Press Enter to accept a suggestion or type your own. The name is a free-form
 label (Nebula does not require the domain), but keeping the `.mesh` suffix
 matches the convention the rest of your certs follow.
 
+If you type a **bare name** (no dot) while your existing certs use a mesh domain,
+the TUI offers to append it: with **one** domain it asks for confirmation; with
+**several** it shows a menu (most-used first, with counts) plus *keep as-is*.
+`nebula-manager sign --name bare` only prints the same hint — it never renames
+silently.
+
 ```
 [?] Enter the certificate name [ulno-framework.ulno.mesh]:
 [?] Enter the IP address [10.100.0.4/24]:
@@ -264,7 +270,7 @@ headless subcommands for scripting — see *Expert / scriptable* below.
 | **Certificates** | list, create CA, sign, view, expiry, **bundle zip**, revoke, switch workspace |
 | **Configuration** | validate / edit Nebula `config.yml`, edit firewall rules |
 | **Connectivity** | ping every cert IP; optional `iperf3` test |
-| **Diagnostics** | TUN IP, listening UDP socket, certificate expiry |
+| **Diagnostics** | TUN IP, listening UDP socket, certificate expiry; reads a service-owned config once with temporary sudo and caches the header values |
 | **Benchmarks** | `iperf3` server / client |
 | **Maintenance** | toggle the service, update Nebula, auto-update scheduler, install/remove |
 
@@ -310,7 +316,7 @@ file/directory browsing automatically uses `whiptail` when it is installed.
 ./nebula-manager diag                   # TUN IP, UDP socket, cert expiry
 
 # Utilities
-./nebula-manager paths                  # resolved config / key dirs + UI backend
+./nebula-manager paths                  # resolved config / key dirs, info cache + UI backend
 ./nebula-manager ui                     # which UI backend is active (menu + browse)
 ./nebula-manager auto-update            # update Nebula to latest
 ./nebula-manager --version
@@ -503,7 +509,7 @@ What it covers:
 | `tests/test_conf.sh` | config path resolution: user-first, `--config`/env override, bundled template + `config init` offline |
 | `tests/test_setup.sh` | Setup state summary (detected config/servers/workspace), `config_use_file` validation, `config remove` without sudo for user paths |
 | `tests/test_tui_menu.sh` | entrypoint Setup/bootstrap menu wiring (import/browse/delete/reload/exit) + the state-line refresh hook |
-| `tests/test_sysinfo.sh` | startup header reads a service-owned `config.yml` via the elevating path (no `Permission denied`) and degrades cleanly when unreadable |
+| `tests/test_sysinfo.sh` | header is cache-first (no sudo/prompt), falls back to the `nebula*` interface guess, points at Diagnostics; unreadable configs never spew `Permission denied` |
 | `tests/test_template_online.sh` | optional (needs `NEBULA_TEST_ONLINE=1`) freshness check of the bundled template vs the repo |
 | `tests/test_update.sh` | update source resolution (origin/env) + no-downgrade version comparison |
 | `tests/test_realstore_readonly.sh` | uses a real cert store **read-only** (hashes unchanged, no `sudo`) |

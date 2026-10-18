@@ -111,7 +111,9 @@ nebula_maintenance() {
 }
 
 # --- TUI glue for the CLI capabilities (Servers / Setup / Diagnostics) --------
-run_diagnostics_tui() { diagnostics_view; }
+# Show the refreshed header after diagnostics: this is the explicit action that
+# reads a service-owned config (with temporary sudo) and caches the values.
+run_diagnostics_tui() { diagnostics_view; echo; show_system_info; }
 
 server_add_tui() {
     local name dir service role host enabled
@@ -327,7 +329,7 @@ Commands:
   server add|list|remove|...      Manage [server.*] entries in nebula-manager.conf
   import [--dry-run] [--yes]      Detect a running Nebula and generate nebula-manager.conf
   ui                              Report the selected menu/browse UI backends
-  paths                           Print resolved config & key directories
+  paths                           Print resolved config, key & cache paths
   auto-update                     Update Nebula to the latest release
 
 Environment:
@@ -350,6 +352,7 @@ print_paths() {
     printf 'bin-path:  %s\n' "$NEBULA_BIN_PATH"
     printf 'lib-dir:   %s\n' "$MANAGER_LIB_DIR"
     printf 'ui-backend: %s\n' "$(ui_backend)"
+    printf 'info-cache: %s\n' "$(nebula_info_cache_file)"
     printf 'update-repo: %s@%s\n' "${REPO_SLUG:-jordanhillis/nebula-manager}" "${REPO_REF:-main}"
 }
 
