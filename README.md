@@ -213,6 +213,45 @@ The app also needs the **CA certificate** (paste `ca.crt`, or scan a QR made wit
 `qrencode`), plus the lighthouse's overlay IP and public `host:port`. See
 `docs/user-stories.md` (Story 1, Phase 2b / Story 2, Dana) for the full flow.
 
+### Renaming / migrating a group
+
+Groups are baked into the certificate, so renaming one means **re-signing every
+certificate that carries it**. **Certificates ▸ Rename Group in Certificates**
+does that without root privileges in a user-owned workspace:
+
+1. asks for the **old** group (`laptops`);
+2. asks for the **new** group (`theprof`);
+3. shows a scrollable **preview** of every matching certificate and the exact
+   group change (unaffected certs and the CA are not listed);
+4. asks for confirmation, then re-signs each match.
+
+```text
+ulno-ge75.theprof.mesh.crt (10.100.0.3/24): [laptops,admin] -> [theprof,admin]
+vps.theprof.mesh.crt       (10.100.0.1/24): [laptops,infra] -> [theprof,infra]
+```
+
+What is preserved: **name, IP networks, subnets and expiry**. Duplicate groups
+are removed and the original order is kept. Each original certificate is saved
+next to itself as `<name>.crt.bak` (a pre-existing backup is never overwritten),
+and the private key on the device is **not** touched — the re-issued certificate
+is signed with a throwaway public key, so devices keep working with their
+existing key.
+
+The same action is available headlessly (and as `cert rename-group`):
+
+```bash
+./nebula-manager rename-group laptops theprof --cert-dir ~/keys/nebula
+./nebula-manager rename-group laptops theprof --cert-dir ~/keys/nebula --yes
+```
+
+Without `--yes` the CLI prints the preview and asks first; on a non-interactive
+shell it refuses instead of re-signing silently.
+
+To give a single certificate **more or different groups**, simply re-sign it
+(`nebula-manager sign --name … --ip … --groups a,b,c` or *Generate Client
+Certificate*) and confirm the overwrite. The certificate is re-issued; the
+device's key stays valid.
+
 ### Exporting a client bundle
 
 **Certificates ▸ Bundle / Export Client Certificate** lists every certificate
@@ -339,7 +378,7 @@ headless subcommands for scripting — see *Expert / scriptable* below.
 |---|---|
 | **Setup** | shows the **detected state** (config, Nebula service, cert workspace), then: import/update from this host, **import a client bundle (.zip/.tar.gz)**, create, browse, edit, delete `nebula-manager.conf`, manage servers, pick the certificate workspace |
 | **Servers** | list / add / enable-disable / remove `[server.*]` entries |
-| **Certificates** | list, create CA, sign, view, expiry, **bundle/export** (pick from a list), revoke, switch workspace |
+| **Certificates** | list, create CA, sign, **rename a group across certificates**, view, expiry, **bundle/export** (pick from a list), revoke, switch workspace |
 | **Configuration** | validate / edit Nebula `config.yml` (service-owned files are edited on a working copy and saved once with a timestamped backup), edit firewall rules, **name resolution (Nebula DNS)** |
 | **Connectivity** | ping every cert IP; optional `iperf3` test |
 | **Diagnostics** | TUN IP, listening UDP socket, certificate expiry; reads a service-owned config once with temporary sudo and caches the header values |
@@ -390,6 +429,8 @@ commands and any errors remain visible for verification. Use `--clear-screen`
 ./nebula-manager cert bundle             # list certificates that can be exported
 ./nebula-manager cert bundle host1       # exact or unique substring; writes to cwd
 ./nebula-manager cert bundle host1 --out ~/Downloads
+./nebula-manager rename-group laptops theprof --cert-dir ~/keys/nebula
+#   ^ re-signs every cert carrying 'laptops', keeps *.crt.bak; --yes to skip the prompt
 
 # Benchmarks & diagnostics   (TUI: Benchmarks, Diagnostics)
 ./nebula-manager bench server --port 5201
@@ -703,6 +744,7 @@ What it covers:
 | `tests/test_edit.sh` | privileged-safe config editing: working copy for read-only/unreadable configs, elevated write-back, timestamped backup, and no-op when nothing changed |
 | `tests/test_import_bundle.sh` | client bundle import: tar.gz extraction, validation, path rebasing, manager.conf creation, overwrite/backup, dry-run, TUI wrapper, CLI, post-import `--start` |
 | `tests/test_dns.sh` | Nebula DNS: lighthouse `serve_dns` + UDP/53 firewall, client `resolvectl` DNS/domain setup, status output, static_host_map fallback |
+| `tests/test_rename_group.sh` | group migration: preview/scan, dedup + order, re-sign preserves name/IP/expiry, unaffected certs/keys byte-identical, `*.crt.bak`, no sudo, CLI `--yes`/non-tty refusal |
 | `tests/pki.bats` | BATS mirror of the core unprivileged-PKI guarantees |
 
 Requirements: `bash`, `nebula-cert` (for PKI tests; auto-skipped otherwise).

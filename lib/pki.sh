@@ -1471,6 +1471,267 @@ pki_bundle_client_zip() {
 }
 
 ###################################################################
+######################## Group migration ##########################
+###################################################################
+
+# _pki_groups_have <comma-list> <group> ; exact membership test (no globbing).
+_pki_groups_have() {
+    local list="$1" want="$2" IFS=',' g
+    for g in $list; do
+        [[ "$g" == "$want" ]] && return 0
+    done
+    return 1
+}
+
+# _pki_groups_replace <comma-list> <old> <new>
+# Replace <old> with <new> in place, drop duplicates, preserve the group order.
+_pki_groups_replace() {
+    local csv="$1" old="$2" new="$3"
+    local IFS=',' p acc=""
+    for p in $csv; do
+        # trim surrounding whitespace
+        p="${p#"${p%%[![:space:]]*}"}"
+        p="${p%"${p##*[![:space:]]}"}"
+        [[ -z "$p" ]] && continue
+        [[ "$p" == "$old" ]] && p="$new"
+        [[ -z "$p" ]] && continue
+        case ",$acc," in *",$p,"*) continue ;; esac
+        acc="${acc:+$acc,}$p"
+    done
+    printf '%s' "$acc"
+}
+
+# pki_group_scan <old> <new> [cert_dir]
+# Inspect every non-CA certificate in cert_dir and remember the ones that carry
+# <old>. Fills the global PKI_RENAME_* arrays. Returns 0 when at least one
+# certificate matches, 1 when there is nothing to do, 2 on usage/setup errors.
+pki_group_scan() {
+    local old="${1:-}" new="${2:-}" cert_dir="${3:-$(resolve_cert_dir)}"
+    PKI_RENAME_FILES=()
+    PKI_RENAME_NAMES=()
+    PKI_RENAME_IPS=()
+    PKI_RENAME_OLDGROUPS=()
+    PKI_RENAME_NEWGROUPS=()
+    if [[ -z "$old" || -z "$new" ]]; then
+        log_error "Both the old and the new group name are required."
+        return 2
+    fi
+    if [[ ! -d "$cert_dir" ]]; then
+        log_error "Certificate directory not found: $cert_dir"
+        return 2
+    fi
+    local bin bin_path crt json is_ca name ips groups newgroups
+    bin="$(pki_cert_bin)" || return 2
+    bin_path="$(dirname "$bin")"
+    for crt in "$cert_dir"/*.crt; do
+        [[ -f "$crt" ]] || continue
+        json="$(nebula_cert_json "$bin_path" "$crt")" || continue
+        [[ -n "$json" ]] || continue
+        # Never re-sign the CA itself.
+        is_ca="$(jq -r '.details.isCa // false' <<<"$json" 2>/dev/null)"
+        [[ "$is_ca" == "true" ]] && continue
+        groups="$(jq -r '(.details.groups // []) | join(",")' <<<"$json" 2>/dev/null)"
+        _pki_groups_have "$groups" "$old" || continue
+        newgroups="$(_pki_groups_replace "$groups" "$old" "$new")"
+        # Nothing changes when the new group already replaced the old one.
+        [[ "$newgroups" == "$groups" ]] && continue
+        name="$(jq -r '.details.name // empty' <<<"$json" 2>/dev/null)"
+        ips="$(jq -r '(.details.ips // []) | join(", ")' <<<"$json" 2>/dev/null)"
+        PKI_RENAME_FILES+=("$crt")
+        PKI_RENAME_NAMES+=("$name")
+        PKI_RENAME_IPS+=("$ips")
+        PKI_RENAME_OLDGROUPS+=("$groups")
+        PKI_RENAME_NEWGROUPS+=("$newgroups")
+    done
+    (( ${#PKI_RENAME_FILES[@]} > 0 ))
+}
+
+# pki_group_preview_text <old> <new> ; render the confirmation preview.
+pki_group_preview_text() {
+    local old="$1" new="$2"
+    local i base width=0 out line
+    for i in "${!PKI_RENAME_FILES[@]}"; do
+        base="$(basename "${PKI_RENAME_FILES[i]}")"
+        (( ${#base} > width )) && width=${#base}
+    done
+    # printf -v keeps the newlines (a $(...) capture would strip them).
+    printf -v out 'Group "%s" will be replaced by "%s" in %d certificate(s).\n' \
+        "$old" "$new" "${#PKI_RENAME_FILES[@]}"
+    out+=$'Originals are backed up as *.crt.bak; private keys are not touched.\n\n'
+    for i in "${!PKI_RENAME_FILES[@]}"; do
+        base="$(basename "${PKI_RENAME_FILES[i]}")"
+        printf -v line '%-*s (%s): [%s] -> [%s]\n' "$width" "$base" "${PKI_RENAME_IPS[i]}" \
+            "${PKI_RENAME_OLDGROUPS[i]}" "${PKI_RENAME_NEWGROUPS[i]}"
+        out+="$line"
+    done
+    printf '%s' "$out"
+}
+
+# pki_group_apply [cert_dir]
+# Re-sign every certificate selected by pki_group_scan, preserving name, IPs,
+# subnets and expiry. Unprivileged: the CA key living in cert_dir is used.
+# Each original certificate is backed up to <name>.crt.bak (only once).
+pki_group_apply() {
+    local cert_dir="${1:-$(resolve_cert_dir)}"
+    if (( ${#PKI_RENAME_FILES[@]} == 0 )); then
+        log_warn "Nothing to re-sign - run pki_group_scan first."
+        return 1
+    fi
+    local bin bin_path ca_crt ca_key
+    bin="$(pki_cert_bin)" || return 1
+    bin_path="$(dirname "$bin")"
+    ca_crt="$(find_ca_crt "$cert_dir")" || { log_error "CA certificate not found in $cert_dir"; return 1; }
+    ca_key="$(find_ca_key "$cert_dir")" || { log_error "CA key not found in $cert_dir"; return 1; }
+
+    local tmp; tmp="$(mktemp -d)" || return 1
+    # A user-owned workspace needs no privileges at all. Only if the store (or
+    # its CA key) lives in a root-owned location do we route the write steps
+    # through elevate(), which announces the reason and command.
+    local -a asroot=()
+    local prev_reason="${ELEVATE_REASON:-}"
+    if declare -F path_requires_root >/dev/null && path_requires_root "$cert_dir"; then
+        asroot=(elevate)
+        ELEVATE_REASON="re-sign certificates and write backups in $cert_dir"
+    fi
+    local i crt json name ips subnets newgroups na epoch_na secs bak out_tmp
+    local ok=0 failed=0
+    for i in "${!PKI_RENAME_FILES[@]}"; do
+        crt="${PKI_RENAME_FILES[i]}"
+        newgroups="${PKI_RENAME_NEWGROUPS[i]}"
+        json="$(nebula_cert_json "$bin_path" "$crt")" || {
+            log_error "Cannot inspect $(basename "$crt")"; failed=$((failed+1)); continue; }
+        name="$(jq -r '.details.name // empty' <<<"$json" 2>/dev/null)"
+        ips="$(jq -r '(.details.ips // []) | join(",")' <<<"$json" 2>/dev/null)"
+        subnets="$(jq -r '(.details.subnets // []) | join(",")' <<<"$json" 2>/dev/null)"
+        na="$(jq -r '.details.notAfter // empty' <<<"$json" 2>/dev/null)"
+        if [[ -z "$name" || -z "$ips" ]]; then
+            log_error "Skipping $(basename "$crt"): certificate has no name or network."
+            failed=$((failed+1)); continue
+        fi
+
+        local -a args=("$bin" sign -name "$name" -networks "$ips"
+            -groups "$newgroups" -ca-crt "$ca_crt" -ca-key "$ca_key")
+        [[ -n "$subnets" ]] && args+=(-unsafe-networks "$subnets")
+        # Preserve the original expiry: re-signing must not silently extend it.
+        if [[ -n "$na" ]]; then
+            epoch_na="$(date -d "$na" +%s 2>/dev/null || echo 0)"
+            secs=$(( epoch_na - $(date +%s) ))
+            if (( secs <= 0 )); then
+                log_error "Skipping $(basename "$crt"): certificate already expired."
+                failed=$((failed+1)); continue
+            fi
+            args+=(-duration "${secs}s")
+        fi
+        # A throwaway public key lets us re-issue the certificate without
+        # touching the private key that is already on the device.
+        if ! debug_run_quiet "$bin" keygen -out-key "$tmp/sign.key" -out-pub "$tmp/sign.pub"; then
+            log_error "Could not generate a temporary key pair for $(basename "$crt")."
+            failed=$((failed+1)); continue
+        fi
+        out_tmp="$tmp/$name.crt"
+        rm -f "$out_tmp"
+        if ! debug_run "${asroot[@]}" "${args[@]}" -in-pub "$tmp/sign.pub" -out-crt "$out_tmp" \
+            || [[ ! -s "$out_tmp" ]]; then
+            log_error "Failed to re-sign $(basename "$crt")."
+            failed=$((failed+1)); continue
+        fi
+
+        bak="$crt.bak"
+        if [[ ! -f "$bak" ]]; then
+            debug_run "${asroot[@]}" cp -p "$crt" "$bak" || {
+                log_error "Could not back up $crt"; failed=$((failed+1)); continue; }
+        fi
+        if debug_run "${asroot[@]}" cp "$out_tmp" "$crt"; then
+            ok=$((ok+1))
+            log_success "Re-signed $(basename "$crt"): [${PKI_RENAME_OLDGROUPS[i]}] -> [$newgroups]"
+        else
+            log_error "Could not replace $crt"
+            failed=$((failed+1))
+        fi
+    done
+    ELEVATE_REASON="$prev_reason"
+    rm -rf "$tmp"
+    log_info "Re-signed ${ok} certificate(s); ${failed} failed."
+    (( failed == 0 ))
+}
+
+# Interactive TUI entry: Certificates > Rename Group in Certificates.
+pki_rename_group_tui() {
+    local cert_dir; cert_dir="$(resolve_cert_dir)"
+    ensure_cert_dir >/dev/null || return 1
+    local old new
+    old="$(ui_input "Rename group" "Group to rename (e.g. laptops):")" || { log_info "Canceled."; return 0; }
+    [[ -z "$old" ]] && { log_info "Canceled."; return 0; }
+    new="$(ui_input "Rename group" "New group name (e.g. theprof):")" || { log_info "Canceled."; return 0; }
+    [[ -z "$new" ]] && { log_info "Canceled."; return 0; }
+    if [[ "$old" == "$new" ]]; then
+        log_warn "Old and new group names are identical - nothing to do."
+        return 0
+    fi
+    if ! pki_group_scan "$old" "$new" "$cert_dir"; then
+        log_warn "No certificate in $cert_dir carries group '$old'."
+        return 1
+    fi
+    local preview
+    preview="$(pki_group_preview_text "$old" "$new")"
+    ui_textbox "Rename group: $old -> $new" "$preview"
+    if ! ui_yesno "Rename group" \
+        "Proceed with re-signing ${#PKI_RENAME_FILES[@]} certificate(s)? The CA key in ${cert_dir} will be used."; then
+        log_info "Canceled - no certificates were changed."
+        return 0
+    fi
+    pki_group_apply "$cert_dir"
+}
+
+# Headless CLI: nebula-manager rename-group <old> <new> [--cert-dir DIR] [--yes]
+rename_group_cli() {
+    local old="" new="" cert_dir="" assume_yes=0
+    while (($#)); do
+        case "$1" in
+            --cert-dir)   shift; cert_dir="${1:-}" ;;
+            --cert-dir=*) cert_dir="${1#*=}" ;;
+            --yes|-y)     assume_yes=1 ;;
+            -h|--help)
+                echo "Usage: nebula-manager rename-group <old> <new> [--cert-dir DIR] [--yes]" >&2
+                echo "  Re-signs every certificate that carries group <old>, replacing it with <new>." >&2
+                echo "  Originals are kept as <name>.crt.bak; private keys are untouched." >&2
+                return 0 ;;
+            -*) log_error "Unknown option for 'rename-group': $1"; return 2 ;;
+            *)
+                if [[ -z "$old" ]]; then old="$1"
+                elif [[ -z "$new" ]]; then new="$1"
+                else log_error "Unexpected argument for 'rename-group': $1"; return 2
+                fi ;;
+        esac
+        shift
+    done
+    if [[ -z "$old" || -z "$new" ]]; then
+        echo "Usage: nebula-manager rename-group <old> <new> [--cert-dir DIR] [--yes]" >&2
+        return 2
+    fi
+    cert_dir="${cert_dir:-$(resolve_cert_dir)}"
+
+    if ! pki_group_scan "$old" "$new" "$cert_dir"; then
+        log_warn "No certificate in $cert_dir carries group '$old'."
+        return 1
+    fi
+    pki_group_preview_text "$old" "$new"
+    printf '\n'
+
+    if (( ! assume_yes )); then
+        if [[ -t 0 ]]; then
+            local answer
+            read -rp "$(show_status 'question') Proceed with re-signing? [y/N]: " answer
+            [[ "$answer" =~ ^[Yy]$ ]] || { log_info "Canceled - no certificates were changed."; return 0; }
+        else
+            log_error "Refusing to re-sign without confirmation; re-run with --yes."
+            return 2
+        fi
+    fi
+    pki_group_apply "$cert_dir"
+}
+
+###################################################################
 ########################### Menus / CLI ############################
 ###################################################################
 
@@ -1481,6 +1742,7 @@ manage_nebula_certs() {
         "$(get_icon 'list')List Certificates"
         "$(get_icon 'create')Generate CA Certificate"
         "$(get_icon 'create')Generate Client Certificate"
+        "$(get_icon 'edit')Rename Group in Certificates"
         "$(get_icon 'inspect')View Certificate and Key Details"
         "$(get_icon 'hour-glass')Certificate Expiry"
         "$(get_icon 'upload')Bundle / Export Client Certificate"
@@ -1492,6 +1754,7 @@ manage_nebula_certs() {
         "list_certs"
         "generate_nebula_ca"
         "generate_nebula_cert"
+        "pki_rename_group_tui"
         "view_cert_details"
         "list_certs_expiry"
         "pki_bundle_client_menu"
@@ -1612,6 +1875,8 @@ pki_cli() {
             ;;
         workspace)
             select_cert_workspace ;;
+        rename-group|rename_group|group-rename)
+            rename_group_cli "$@" ;;
         *) log_error "Unknown 'cert' subcommand: $sub"; return 2 ;;
     esac
 }

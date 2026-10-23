@@ -333,6 +333,10 @@ Commands:
                                   Export a client zip (NAME may be a unique
                                   substring; omit it to list candidates).
                                   Default output: current dir, else ~/Downloads
+  rename-group <old> <new>        Replace a group in every certificate that
+                                  carries it (re-signs; keeps *.crt.bak).
+                                  Options: --cert-dir DIR --yes
+                                  Same as: cert rename-group
   bench server|client [...]       iperf3 benchmarks
   diag                            Diagnostics (TUN IP, UDP socket, cert expiry)
   dns status|setup|apply|persist|lighthouse
@@ -419,6 +423,8 @@ main() {
         ca)             shift; pki_ca_cli "$@" ;;
         sign)           shift; pki_sign_cli "$@" ;;
         cert|pki)       shift; pki_cli "$@" ;;
+        rename-group|rename_group|group-rename)
+                        shift; rename_group_cli "$@" ;;
         bench)          shift; bench_cli "$@" ;;
         diag|diagnose)  shift; diag_cli "$@" ;;
         dns)            shift; dns_cli "$@" ;;

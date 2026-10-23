@@ -386,6 +386,35 @@ ui_msg() {
 }
 
 # ui_yesno <title> <prompt> ; returns 0 for yes, 1 for no/cancel
+# ui_textbox <title> <text> ; scrollable preview (curses) or stderr (plain).
+ui_textbox() {
+    local title="$1" text="$2" backend f rows cols h w
+    backend="$(ui_backend)"
+    case "$backend" in
+        whiptail|dialog)
+            f="$(mktemp)"
+            printf '%s\n' "$text" > "$f"
+            cols="$(_ui_box_cols)"
+            rows="${UI_MENU_ROWS:-$(tput lines 2>/dev/null || echo 24)}"
+            [[ "$rows" =~ ^[0-9]+$ ]] || rows=24
+            h=$(( rows - 3 )); (( h < 10 )) && h=10
+            w=$(( cols - 4 ));  (( w < 40 )) && w=40
+            if [[ "$backend" == whiptail ]]; then
+                whiptail --title "$title" --scrolltext --textbox "$f" "$h" "$w"
+            else
+                dialog --title "$title" --textbox "$f" "$h" "$w"
+            fi
+            local rc=$?
+            rm -f "$f"
+            return $rc
+            ;;
+        *)
+            echo -e "${BOLD}$title${RESET}" >&2
+            printf '%s\n' "$text" >&2
+            ;;
+    esac
+}
+
 ui_yesno() {
     local title="$1" prompt="$2" backend answer
     backend="$(ui_backend)"

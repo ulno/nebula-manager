@@ -304,6 +304,52 @@ Notes:
 - `nebula-manager sign --in-pub … --qr …` (and the TUI mobile question) handles
    this step; it never writes a private key for a device-generated key.
 
+### Phase 2c — Tidy the accidental `laptops` group (✅ available)
+
+Because the early certificates were all signed with `--groups laptops`, every
+home machine (the framework, the ge75 and the new boxes) shares the same group,
+while the VPS is in `lighthouse,servers`. theprof wants a clearer name and room
+for more roles (`admin`, `mobile`, `students`).
+
+**TUI:** *Certificates ▸ Rename Group in Certificates*.
+
+1. old group `laptops`; new group `home`;
+2. the preview lists exactly which certificates change and which do not (the
+   VPS is absent because it never carried `laptops`):
+
+   ```text
+theprof-framework.theprof.mesh.crt (10.100.0.2/24): [laptops] -> [home]
+theprof-ge75.theprof.mesh.crt      (10.100.0.3/24): [laptops] -> [home]
+   ```
+
+3. confirm, and each match is re-signed unprivileged. Name, IP, subnets and
+expiry are preserved, duplicates are removed, and every original is kept as
+`<name>.crt.bak`. The devices keep their existing private keys, so **nothing has
+to be re-installed on them** — they only need the refreshed `.crt` (copy it, or
+export a fresh bundle). *Not listed* certificates are byte-identical afterwards.
+
+```bash
+$ nebula-manager rename-group laptops home --cert-dir ~/keys/nebula        # preview + confirm
+$ nebula-manager rename-group laptops home --cert-dir ~/keys/nebula --yes  # no prompt (scripts)
+```
+
+A **single** machine can also just get a different/multiple group set by
+re-signing it explicitly (the key stays valid):
+
+```bash
+$ nebula-manager sign --cert-dir ~/keys/nebula \
+      --name theprof-framework.theprof.mesh --ip 10.100.0.2/24 \
+      --groups admin,home
+```
+
+or the same through *Certificates ▸ Generate Client Certificate* (answer **y**
+to the overwrite prompt). Afterwards **Configuration ▸ Edit Firewall** can use
+the new groups, e.g. allow all of `home` to talk to each other while keeping
+`students` separate.
+
+> Note: an existing `.crt.bak` is never overwritten, so a second rename keeps
+the *original* certificate around for rollback.
+
 ### Phase 3 — Two student groups of three machines (⚙️ planned "profiles")
 
 **TUI:** ⚙️ planned *Profiles ▸ Create group*.
@@ -457,6 +503,7 @@ the student's machine.
 | Capability | Status |
 |---|---|
 | Create CA, sign certs, list/inspect/expiry, remove | ✅ today |
+| **Rename/migrate a group** across certs (`rename-group` / Certificates ▸ Rename Group) | ✅ today |
 | Unprivileged cert workspace (`--cert-dir` / `NEBULA_KEYS_DIR` / auto-detect) | ✅ today |
 | Client bundle (cert, key, `ca.crt`, config template) | ✅ today |
 | Tool config resolution + `config init/refresh/edit` (offline template) | ✅ today |
