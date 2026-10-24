@@ -213,22 +213,67 @@ The app also needs the **CA certificate** (paste `ca.crt`, or scan a QR made wit
 `qrencode`), plus the lighthouse's overlay IP and public `host:port`. See
 `docs/user-stories.md` (Story 1, Phase 2b / Story 2, Dana) for the full flow.
 
-### Renaming / migrating a group
+### Editing groups (batch)
 
-Groups are baked into the certificate, so renaming one means **re-signing every
-certificate that carries it**. **Certificates ▸ Rename Group in Certificates**
-does that without root privileges in a user-owned workspace:
+Groups are baked into the certificate, so any group change means **re-signing the
+affected certificates**. Instead of one hard-wired rename, nebula-manager uses a
+**select → act** model (1–10 nodes is a comfortable checklist):
 
-1. asks for the **old** group (`laptops`);
-2. asks for the **new** group (`theprof`);
-3. shows a scrollable **preview** of every matching certificate and the exact
-   group change (unaffected certs and the CA are not listed);
-4. asks for confirmation, then re-signs each match.
+**Certificates ▸ Edit Groups (Batch)…**
+
+1. type a **filter** — `all`, `group:laptops`, `without:home`, `name:theprof-*`,
+   `ip:10.100.0.0/24` (unions and exclusions are supported);
+2. confirm the matches in a **checkbox list** (all pre-selected; space toggles);
+3. pick an **action**: add, remove, move, set or rename;
+4. review the exact per-certificate diff and confirm;
+5. optionally apply **another action to the same selection** (e.g. add `home`,
+   then also add `admin`).
 
 ```text
-ulno-ge75.theprof.mesh.crt (10.100.0.3/24): [laptops,admin] -> [theprof,admin]
-vps.theprof.mesh.crt       (10.100.0.1/24): [laptops,infra] -> [theprof,infra]
+Add group "home" to 2 certificate(s).
+Originals are backed up as *.crt.bak; private keys are not touched.
+
+theprof-framework.theprof.mesh.crt (10.100.0.2/24): [laptops,admin] -> [laptops,admin,home]
+theprof-ge75.theprof.mesh.crt      (10.100.0.3/24): [laptops] -> [laptops,home]
 ```
+
+| Action | Semantics |
+|---|---|
+| **add** | union — never replaces an existing group; already-present is a no-op |
+| **remove** | subtract; absent is a no-op |
+| **move A B** | add B and remove A **in one re-sign** (in-place, deduplicated) |
+| **set** | replace the whole group list (`set ""` clears it) |
+| **rename A B** | replace A with B only where A exists |
+
+The conditional case is just a selection: *“remove `laptops` if `home` is
+present, otherwise keep it”* = **select `group:home`, action remove `laptops`** —
+certificates without `home` are never selected, so they stay untouched.
+
+Headless equivalents (all support `--dry-run`, `--yes` and `--cert-dir DIR`):
+
+```bash
+./nebula-manager group list --cert-dir ~/keys/nebula
+
+./nebula-manager group add home      --select group:laptops
+./nebula-manager group remove laptops --select group:home
+./nebula-manager group move laptops home --select group:laptops
+./nebula-manager group set "home,admin" --select name:theprof-*
+./nebula-manager group prune laptops --when group:home   # conditional remove
+./nebula-manager group rename laptops home               # alias: rename-group
+
+./nebula-manager group add test --select group:laptops --dry-run   # preview only
+```
+
+Selector grammar (repeat `--select` to union; `--exclude` subtracts):
+
+| Spec | Matches |
+|---|---|
+| `all` | every non-CA certificate |
+| `group:G` / `has:G` | certificates carrying group G |
+| `without:G` / `missing:G` | certificates **not** carrying G |
+| `name:GLOB` | certificate-name glob (`name:theprof-*`) |
+| `ip:CIDR` / `ip:ADDR` | overlay address inside the CIDR / exactly ADDR |
+| `cert:NAME` / `NAME` | exact certificate name (case-insensitive) |
 
 What is preserved: **name, IP networks, subnets and expiry**. Duplicate groups
 are removed and the original order is kept. Each original certificate is saved
@@ -237,20 +282,14 @@ and the private key on the device is **not** touched — the re-issued certifica
 is signed with a throwaway public key, so devices keep working with their
 existing key.
 
-The same action is available headlessly (and as `cert rename-group`):
-
-```bash
-./nebula-manager rename-group laptops theprof --cert-dir ~/keys/nebula
-./nebula-manager rename-group laptops theprof --cert-dir ~/keys/nebula --yes
-```
-
 Without `--yes` the CLI prints the preview and asks first; on a non-interactive
-shell it refuses instead of re-signing silently.
+shell it refuses instead of re-signing silently. Batch actions require an
+explicit `--select` (only `rename` defaults to `group:<old>`), so a missing
+filter can never silently rewrite everything.
 
-To give a single certificate **more or different groups**, simply re-sign it
-(`nebula-manager sign --name … --ip … --groups a,b,c` or *Generate Client
-Certificate*) and confirm the overwrite. The certificate is re-issued; the
-device's key stays valid.
+To give a **single** certificate more groups you can also re-sign it directly
+(`nebula-manager sign --name … --ip … --groups a,b,c`), or use the batch editor
+with `--select cert:<name>`.
 
 ### Exporting a client bundle
 
@@ -378,7 +417,7 @@ headless subcommands for scripting — see *Expert / scriptable* below.
 |---|---|
 | **Setup** | shows the **detected state** (config, Nebula service, cert workspace), then: import/update from this host, **import a client bundle (.zip/.tar.gz)**, create, browse, edit, delete `nebula-manager.conf`, manage servers, pick the certificate workspace |
 | **Servers** | list / add / enable-disable / remove `[server.*]` entries |
-| **Certificates** | list, create CA, sign, **rename a group across certificates**, view, expiry, **bundle/export** (pick from a list), revoke, switch workspace |
+| **Certificates** | list, create CA, sign, **edit groups in bulk** (add/remove/move/set/rename with a filter), view, expiry, **bundle/export** (pick from a list), revoke, switch workspace |
 | **Configuration** | validate / edit Nebula `config.yml` (service-owned files are edited on a working copy and saved once with a timestamped backup), edit firewall rules, **name resolution (Nebula DNS)** |
 | **Connectivity** | ping every cert IP; optional `iperf3` test |
 | **Diagnostics** | TUN IP, listening UDP socket, certificate expiry; reads a service-owned config once with temporary sudo and caches the header values |
@@ -431,6 +470,12 @@ commands and any errors remain visible for verification. Use `--clear-screen`
 ./nebula-manager cert bundle host1 --out ~/Downloads
 ./nebula-manager rename-group laptops theprof --cert-dir ~/keys/nebula
 #   ^ re-signs every cert carrying 'laptops', keeps *.crt.bak; --yes to skip the prompt
+./nebula-manager group list --cert-dir ~/keys/nebula
+./nebula-manager group add home --select group:laptops --cert-dir ~/keys/nebula
+./nebula-manager group move laptops home --select group:laptops
+./nebula-manager group prune laptops --when group:home
+#   ^ select → act: only certs with 'home' lose 'laptops'; others are untouched
+./nebula-manager group set "home,admin" --select name:theprof-* --dry-run
 
 # Benchmarks & diagnostics   (TUI: Benchmarks, Diagnostics)
 ./nebula-manager bench server --port 5201
@@ -745,6 +790,7 @@ What it covers:
 | `tests/test_import_bundle.sh` | client bundle import: tar.gz extraction, validation, path rebasing, manager.conf creation, overwrite/backup, dry-run, TUI wrapper, CLI, post-import `--start` |
 | `tests/test_dns.sh` | Nebula DNS: lighthouse `serve_dns` + UDP/53 firewall, client `resolvectl` DNS/domain setup, status output, static_host_map fallback |
 | `tests/test_rename_group.sh` | group migration: preview/scan, dedup + order, re-sign preserves name/IP/expiry, unaffected certs/keys byte-identical, `*.crt.bak`, no sudo, CLI `--yes`/non-tty refusal |
+| `tests/test_group_batch.sh` | selector grammar (`group`/`without`/`name` glob/`ip` CIDR/`cert`/union/exclude) + batch add/remove/move/set/prune, idempotency, `--dry-run`, non-tty refusal, `group list`, plain checklist parsing |
 | `tests/pki.bats` | BATS mirror of the core unprivileged-PKI guarantees |
 
 Requirements: `bash`, `nebula-cert` (for PKI tests; auto-skipped otherwise).

@@ -1483,13 +1483,27 @@ _pki_groups_have() {
     return 1
 }
 
+# _pki_groups_normalize <comma-list> ; trim, drop empties and duplicates.
+_pki_groups_normalize() {
+    local csv="$1"
+    local IFS=',' p acc=""
+    for p in $csv; do
+        # trim surrounding whitespace
+        p="${p#"${p%%[![:space:]]*}"}"
+        p="${p%"${p##*[![:space:]]}"}"
+        [[ -z "$p" ]] && continue
+        case ",$acc," in *",$p,"*) continue ;; esac
+        acc="${acc:+$acc,}$p"
+    done
+    printf '%s' "$acc"
+}
+
 # _pki_groups_replace <comma-list> <old> <new>
 # Replace <old> with <new> in place, drop duplicates, preserve the group order.
 _pki_groups_replace() {
     local csv="$1" old="$2" new="$3"
     local IFS=',' p acc=""
     for p in $csv; do
-        # trim surrounding whitespace
         p="${p#"${p%%[![:space:]]*}"}"
         p="${p%"${p##*[![:space:]]}"}"
         [[ -z "$p" ]] && continue
@@ -1501,62 +1515,140 @@ _pki_groups_replace() {
     printf '%s' "$acc"
 }
 
-# pki_group_scan <old> <new> [cert_dir]
-# Inspect every non-CA certificate in cert_dir and remember the ones that carry
-# <old>. Fills the global PKI_RENAME_* arrays. Returns 0 when at least one
-# certificate matches, 1 when there is nothing to do, 2 on usage/setup errors.
-pki_group_scan() {
-    local old="${1:-}" new="${2:-}" cert_dir="${3:-$(resolve_cert_dir)}"
+# _pki_groups_add <comma-list> <group> ; union (idempotent, order preserved).
+_pki_groups_add() {
+    local csv="$1" new="$2" norm
+    [[ -z "$new" ]] && { printf '%s' "$csv"; return 0; }
+    norm="$(_pki_groups_normalize "$csv")"
+    _pki_groups_have "$norm" "$new" && { printf '%s' "$norm"; return 0; }
+    if [[ -z "$norm" ]]; then printf '%s' "$new"; else printf '%s,%s' "$norm" "$new"; fi
+}
+
+# _pki_groups_remove <comma-list> <group> ; subtract (idempotent).
+_pki_groups_remove() {
+    local csv="$1" drop="$2"
+    local IFS=',' p acc=""
+    for p in $csv; do
+        p="${p#"${p%%[![:space:]]*}"}"
+        p="${p%"${p##*[![:space:]]}"}"
+        [[ -z "$p" ]] && continue
+        [[ "$p" == "$drop" ]] && continue
+        case ",$acc," in *",$p,"*) continue ;; esac
+        acc="${acc:+$acc,}$p"
+    done
+    printf '%s' "$acc"
+}
+
+# _pki_groups_move <comma-list> <from> <to>
+# Replace <from> in place (order preserved, deduplicated); if the certificate
+# does not carry <from>, simply add <to> (the selection is explicit).
+_pki_groups_move() {
+    local csv="$1" from="$2" to="$3"
+    if _pki_groups_have "$csv" "$from"; then
+        _pki_groups_replace "$csv" "$from" "$to"
+    else
+        _pki_groups_add "$csv" "$to"
+    fi
+}
+
+# _pki_group_name_valid <name> ; no commas or whitespace, non-empty.
+_pki_group_name_valid() {
+    local g="$1"
+    [[ -n "$g" && "$g" != *,* && ! "$g" =~ [[:space:]] ]]
+}
+
+_pki_groups_validate_list() {
+    local csv="$1"
+    local IFS=',' g
+    for g in $csv; do
+        g="${g#"${g%%[![:space:]]*}"}"
+        g="${g%"${g##*[![:space:]]}"}"
+        [[ -z "$g" ]] && return 1
+        _pki_group_name_valid "$g" || return 1
+    done
+    return 0
+}
+
+# pki_group_plan <add|remove|move|set|rename> [args]
+# Turn the current SEL_* selection (from cert_select) into a re-sign plan:
+# fills PKI_RENAME_* with one entry per certificate whose groups change.
+# Returns 0 when something changes, 1 when the selection is already in the
+# desired state, 2 on invalid arguments.
+pki_group_plan() {
+    local action="${1:-}"; shift || true
     PKI_RENAME_FILES=()
     PKI_RENAME_NAMES=()
     PKI_RENAME_IPS=()
     PKI_RENAME_OLDGROUPS=()
     PKI_RENAME_NEWGROUPS=()
-    if [[ -z "$old" || -z "$new" ]]; then
-        log_error "Both the old and the new group name are required."
-        return 2
+    local a="${1:-}" b="${2:-}" setlist=""
+    case "$action" in
+        add|remove)
+            _pki_group_name_valid "$a" || { log_error "Invalid group name: '$a'"; return 2; }
+            ;;
+        move|rename)
+            _pki_group_name_valid "$a" || { log_error "Invalid old group name: '$a'"; return 2; }
+            _pki_group_name_valid "$b" || { log_error "Invalid new group name: '$b'"; return 2; }
+            ;;
+        set)
+            if [[ -n "$a" && "$a" != "-" ]]; then
+                _pki_groups_validate_list "$a" || { log_error "Invalid group list: '$a'"; return 2; }
+                setlist="$(_pki_groups_normalize "$a")"
+            fi
+            ;;
+        *) log_error "Unknown group action: '$action'"; return 2 ;;
+    esac
+
+    if (( ${#SEL_FILES[@]} == 0 )); then
+        log_warn "No certificates selected."
+        return 1
     fi
-    if [[ ! -d "$cert_dir" ]]; then
-        log_error "Certificate directory not found: $cert_dir"
-        return 2
-    fi
-    local bin bin_path crt json is_ca name ips groups newgroups
-    bin="$(pki_cert_bin)" || return 2
-    bin_path="$(dirname "$bin")"
-    for crt in "$cert_dir"/*.crt; do
-        [[ -f "$crt" ]] || continue
-        json="$(nebula_cert_json "$bin_path" "$crt")" || continue
-        [[ -n "$json" ]] || continue
-        # Never re-sign the CA itself.
-        is_ca="$(jq -r '.details.isCa // false' <<<"$json" 2>/dev/null)"
-        [[ "$is_ca" == "true" ]] && continue
-        groups="$(jq -r '(.details.groups // []) | join(",")' <<<"$json" 2>/dev/null)"
-        _pki_groups_have "$groups" "$old" || continue
-        newgroups="$(_pki_groups_replace "$groups" "$old" "$new")"
-        # Nothing changes when the new group already replaced the old one.
-        [[ "$newgroups" == "$groups" ]] && continue
-        name="$(jq -r '.details.name // empty' <<<"$json" 2>/dev/null)"
-        ips="$(jq -r '(.details.ips // []) | join(", ")' <<<"$json" 2>/dev/null)"
-        PKI_RENAME_FILES+=("$crt")
-        PKI_RENAME_NAMES+=("$name")
-        PKI_RENAME_IPS+=("$ips")
-        PKI_RENAME_OLDGROUPS+=("$groups")
-        PKI_RENAME_NEWGROUPS+=("$newgroups")
+
+    local i old new
+    for i in "${!SEL_FILES[@]}"; do
+        old="${SEL_GROUPS[i]}"
+        case "$action" in
+            add)    new="$(_pki_groups_add    "$old" "$a")" ;;
+            remove) new="$(_pki_groups_remove "$old" "$a")" ;;
+            move)   new="$(_pki_groups_move   "$old" "$a" "$b")" ;;
+            set)    new="$setlist" ;;
+            rename) new="$(_pki_groups_replace "$old" "$a" "$b")" ;;
+        esac
+        [[ "$new" == "$old" ]] && continue
+        PKI_RENAME_FILES+=("${SEL_FILES[i]}")
+        PKI_RENAME_NAMES+=("${SEL_NAMES[i]}")
+        PKI_RENAME_IPS+=("${SEL_IPS[i]}")
+        PKI_RENAME_OLDGROUPS+=("$old")
+        PKI_RENAME_NEWGROUPS+=("$new")
     done
     (( ${#PKI_RENAME_FILES[@]} > 0 ))
 }
 
-# pki_group_preview_text <old> <new> ; render the confirmation preview.
-pki_group_preview_text() {
-    local old="$1" new="$2"
+# pki_group_scan <old> <new> [cert_dir]
+# Backwards-compatible rename scan: select every certificate carrying <old>
+# and plan replacing it with <new>.
+pki_group_scan() {
+    local old="${1:-}" new="${2:-}" cert_dir="${3:-$(resolve_cert_dir)}"
+    if [[ -z "$old" || -z "$new" ]]; then
+        log_error "Both the old and the new group name are required."
+        return 2
+    fi
+    cert_select "$cert_dir" --select "group:$old"
+    local rc=$?
+    (( rc == 0 )) || return $rc
+    pki_group_plan rename "$old" "$new"
+}
+
+# pki_group_diff_text <summary> ; aligned per-certificate preview.
+pki_group_diff_text() {
+    local summary="$1"
     local i base width=0 out line
     for i in "${!PKI_RENAME_FILES[@]}"; do
         base="$(basename "${PKI_RENAME_FILES[i]}")"
         (( ${#base} > width )) && width=${#base}
     done
     # printf -v keeps the newlines (a $(...) capture would strip them).
-    printf -v out 'Group "%s" will be replaced by "%s" in %d certificate(s).\n' \
-        "$old" "$new" "${#PKI_RENAME_FILES[@]}"
+    printf -v out '%s\n' "$summary"
     out+=$'Originals are backed up as *.crt.bak; private keys are not touched.\n\n'
     for i in "${!PKI_RENAME_FILES[@]}"; do
         base="$(basename "${PKI_RENAME_FILES[i]}")"
@@ -1565,6 +1657,12 @@ pki_group_preview_text() {
         out+="$line"
     done
     printf '%s' "$out"
+}
+
+# pki_group_preview_text <old> <new> ; rename preview (kept for callers/tests).
+pki_group_preview_text() {
+    local old="$1" new="$2"
+    pki_group_diff_text "Group \"$old\" will be replaced by \"$new\" in ${#PKI_RENAME_FILES[@]} certificate(s)."
 }
 
 # pki_group_apply [cert_dir]
@@ -1683,6 +1781,244 @@ pki_rename_group_tui() {
     pki_group_apply "$cert_dir"
 }
 
+# Interactive TUI entry: Certificates > Edit Groups (Batch).
+pki_group_edit_tui() {
+    local cert_dir; cert_dir="$(resolve_cert_dir)"
+    ensure_cert_dir >/dev/null || return 1
+    if ! cert_select_tui "$cert_dir"; then
+        return 0
+    fi
+    local count="${#SEL_FILES[@]}" action a b summary preview rc n
+    while true; do
+        action="$(ui_menu "Edit groups" "Action for ${count} selected certificate(s):" \
+            add    "Add a group" \
+            remove "Remove a group" \
+            move   "Move a group (add B, remove A)" \
+            set    "Replace the whole group list" \
+            rename "Rename a group (replace A with B)" \
+            list   "Show the current groups")" || return 0
+        a=""; b=""; summary=""
+        case "$action" in
+            list)
+                local i
+                for i in "${!SEL_FILES[@]}"; do
+                    printf '  %-36s [%s]\n' "$(basename "${SEL_FILES[i]}")" "${SEL_GROUPS[i]:-}"
+                done
+                continue
+                ;;
+            add)
+                a="$(ui_input "Add group" "Group to add:")" || return 0 ;;
+            remove)
+                a="$(ui_input "Remove group" "Group to remove:")" || return 0 ;;
+            move)
+                a="$(ui_input "Move group" "Group to remove:")" || return 0
+                [[ -z "$a" ]] && { log_info "Canceled."; return 0; }
+                b="$(ui_input "Move group" "Group to add (replaces '$a'):")" || return 0 ;;
+            rename)
+                a="$(ui_input "Rename group" "Old group:")" || return 0
+                [[ -z "$a" ]] && { log_info "Canceled."; return 0; }
+                b="$(ui_input "Rename group" "New group name:")" || return 0 ;;
+            set)
+                a="$(ui_input "Set groups" "New group list (comma-separated, empty clears):")" || return 0 ;;
+        esac
+        if [[ "$action" != set && -z "$a" ]]; then log_info "Canceled."; return 0; fi
+        if [[ "$action" == move || "$action" == rename ]] && [[ -z "$b" ]]; then
+            log_info "Canceled."; return 0
+        fi
+
+        rc=0
+        case "$action" in
+            move|rename) pki_group_plan "$action" "$a" "$b" || rc=$? ;;
+            *)           pki_group_plan "$action" "$a" || rc=$? ;;
+        esac
+        (( rc == 2 )) && continue
+        if (( ${#PKI_RENAME_FILES[@]} == 0 )); then
+            log_info "No changes needed for the selected certificate(s)."
+        else
+            case "$action" in
+                add)    summary="Add group \"$a\" to ${#PKI_RENAME_FILES[@]} certificate(s)." ;;
+                remove) summary="Remove group \"$a\" from ${#PKI_RENAME_FILES[@]} certificate(s)." ;;
+                move)   summary="Move group \"$a\" -> \"$b\" on ${#PKI_RENAME_FILES[@]} certificate(s)." ;;
+                set)    summary="Set groups to [${a:-none}] on ${#PKI_RENAME_FILES[@]} certificate(s)." ;;
+                rename) summary="Group \"$a\" will be replaced by \"$b\" in ${#PKI_RENAME_FILES[@]} certificate(s)." ;;
+            esac
+            preview="$(pki_group_diff_text "$summary")"
+            ui_textbox "Edit groups" "$preview"
+            if ui_yesno "Edit groups" \
+                "Proceed with re-signing ${#PKI_RENAME_FILES[@]} certificate(s)? The CA key in ${cert_dir} will be used."; then
+                if pki_group_apply "$cert_dir"; then
+                    # The groups on disk changed: refresh the selection so a
+                    # follow-up action previews against the new state.
+                    local -a refresh=()
+                    for n in "${SEL_NAMES[@]}"; do refresh+=(--select "cert:$n"); done
+                    cert_select "$cert_dir" "${refresh[@]}" || true
+                fi
+            else
+                log_info "Canceled - no certificates were changed."
+            fi
+        fi
+        ui_yesno "Edit groups" "Apply another action to the same selection?" || break
+    done
+}
+
+# Headless CLI: nebula-manager group <command> ...
+group_usage() {
+    cat <<'EOF'
+Usage: nebula-manager group <command> [options]
+
+Commands:
+  list                                    Show certificate names, IPs and groups
+  add    <group>     --select SPEC [...]  Add a group (union, idempotent)
+  remove <group>     --select SPEC [...]  Remove a group (idempotent)
+  move   <old> <new> --select SPEC [...]  Add <new> and remove <old> in one re-sign
+  set    <g1,g2>     --select SPEC [...]  Replace the whole group list ('' clears)
+  prune  <group>     --when SPEC [...]    Remove <group> only from matches
+  rename <old> <new> [--select SPEC]      Rename a group (default: group:<old>)
+
+Selector specs (repeatable --select = union, --exclude = subtract):
+  all | group:G | without:G | name:GLOB | ip:CIDR|ADDR | cert:NAME | NAME
+  Shortcut: --when-group G  ==  --when group:G
+
+Options:
+  --cert-dir DIR   Certificate workspace (default: resolved workspace)
+  --dry-run, -n    Show the preview; change nothing
+  --yes, -y        Do not ask (required when stdin is not a TTY)
+  -h, --help       This help
+
+Examples:
+  nebula-manager group add home --select group:laptops
+  nebula-manager group move laptops home --select group:laptops
+  nebula-manager group prune laptops --when group:home
+  nebula-manager group set "home,admin" --select name:theprof-*
+  nebula-manager group rename laptops home --yes
+EOF
+}
+
+group_cli() {
+    if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+        group_usage
+        return 0
+    fi
+    local sub="${1:-list}"; shift || true
+    local cert_dir="" dry=0 assume_yes=0 when="" when_group=""
+    local -a selects=() excludes=() pos=()
+    while (( $# )); do
+        case "$1" in
+            --cert-dir)       shift; cert_dir="${1:-}" ;;
+            --cert-dir=*)     cert_dir="${1#*=}" ;;
+            --select)         shift; selects+=("${1:-}") ;;
+            --select=*)       selects+=("${1#*=}") ;;
+            --exclude)        shift; excludes+=("${1:-}") ;;
+            --exclude=*)      excludes+=("${1#*=}") ;;
+            --when)           shift; when="${1:-}" ;;
+            --when=*)         when="${1#*=}" ;;
+            --when-group)     shift; when_group="${1:-}" ;;
+            --when-group=*)   when_group="${1#*=}" ;;
+            --dry-run|-n)     dry=1 ;;
+            --yes|-y)         assume_yes=1 ;;
+            -h|--help)        group_usage; return 0 ;;
+            -*) log_error "Unknown option for 'group $sub': $1"; return 2 ;;
+            *) pos+=("$1") ;;
+        esac
+        shift
+    done
+    cert_dir="${cert_dir:-$(resolve_cert_dir)}"
+
+    case "$sub" in
+        list) cert_group_list "$cert_dir"; return ;;
+        add|remove|move|set|prune|rename) ;;
+        *) log_error "Unknown 'group' subcommand: $sub"; group_usage >&2; return 2 ;;
+    esac
+
+    local a="${pos[0]:-}" b="${pos[1]:-}"
+    local have_a=0
+    (( ${#pos[@]} >= 1 )) && have_a=1
+    case "$sub" in
+        add|remove|prune)
+            [[ -n "$a" ]] || { log_error "group $sub: missing group argument"; group_usage >&2; return 2; }
+            ;;
+        set)
+            (( have_a )) || { log_error "group set: missing group list (pass '' to clear all groups)"; group_usage >&2; return 2; }
+            ;;
+        move|rename)
+            [[ -n "$a" && -n "$b" ]] || { log_error "group $sub: expected <old> <new>"; group_usage >&2; return 2; }
+            ;;
+    esac
+
+    if [[ "$sub" == prune ]]; then
+        if [[ -n "$when" && -n "$when_group" ]]; then
+            log_error "Use either --when or --when-group, not both."; return 2
+        fi
+        if (( ${#selects[@]} > 0 )); then
+            log_error "group prune takes its selection from --when; do not also pass --select."; return 2
+        fi
+        [[ -n "$when_group" ]] && when="group:$when_group"
+        [[ -n "$when" ]] || { log_error "group prune requires --when <spec> (e.g. --when group:home)."; return 2; }
+        if [[ "$when" != *:* && "$when" != all ]]; then when="group:$when"; fi
+        selects=("$when")
+    fi
+
+    if [[ "$sub" == rename ]] && (( ${#selects[@]} == 0 )); then
+        selects=("group:$a")
+    fi
+    if (( ${#selects[@]} == 0 )); then
+        log_error "group $sub requires --select <spec> (example: --select group:laptops)."
+        return 2
+    fi
+
+    local -a selargs=()
+    local s
+    for s in "${selects[@]}"; do selargs+=(--select "$s"); done
+    for s in "${excludes[@]}"; do selargs+=(--exclude "$s"); done
+    cert_select "$cert_dir" "${selargs[@]}"
+    local rc=$?
+    (( rc == 2 )) && return 2
+    if (( rc != 0 )); then
+        log_warn "No certificate matched the selection in $cert_dir."
+        return 1
+    fi
+
+    local prc=0 plan_action="$sub"
+    [[ "$sub" == prune ]] && plan_action=remove
+    case "$plan_action" in
+        move|rename) pki_group_plan "$plan_action" "$a" "$b" || prc=$? ;;
+        *)           pki_group_plan "$plan_action" "$a" || prc=$? ;;
+    esac
+    (( prc == 2 )) && return 2
+    if (( ${#PKI_RENAME_FILES[@]} == 0 )); then
+        log_info "No changes needed - the selected certificate(s) already match."
+        return 0
+    fi
+
+    local summary
+    case "$sub" in
+        add)    summary="Add group \"$a\" to ${#PKI_RENAME_FILES[@]} certificate(s)." ;;
+        remove) summary="Remove group \"$a\" from ${#PKI_RENAME_FILES[@]} certificate(s)." ;;
+        move)   summary="Move group \"$a\" -> \"$b\" on ${#PKI_RENAME_FILES[@]} certificate(s)." ;;
+        set)    summary="Set groups to [${a:-none}] on ${#PKI_RENAME_FILES[@]} certificate(s)." ;;
+        rename) summary="Group \"$a\" will be replaced by \"$b\" in ${#PKI_RENAME_FILES[@]} certificate(s)." ;;
+        prune)  summary="Remove group \"$a\" from the ${#PKI_RENAME_FILES[@]} certificate(s) matching '$when'." ;;
+    esac
+    pki_group_diff_text "$summary"
+    printf '\n'
+
+    if (( dry )); then
+        log_info "Dry run - nothing was changed."
+        return 0
+    fi
+    if (( ! assume_yes )); then
+        if [[ -t 0 ]]; then
+            local answer
+            read -rp "$(show_status 'question') Proceed with re-signing? [y/N]: " answer
+            [[ "$answer" =~ ^[Yy]$ ]] || { log_info "Canceled - no certificates were changed."; return 0; }
+        else
+            log_error "Refusing to re-sign without confirmation; re-run with --yes."
+            return 2
+        fi
+    fi
+    pki_group_apply "$cert_dir"
+}
+
 # Headless CLI: nebula-manager rename-group <old> <new> [--cert-dir DIR] [--yes]
 rename_group_cli() {
     local old="" new="" cert_dir="" assume_yes=0
@@ -1743,6 +2079,7 @@ manage_nebula_certs() {
         "$(get_icon 'create')Generate CA Certificate"
         "$(get_icon 'create')Generate Client Certificate"
         "$(get_icon 'edit')Rename Group in Certificates"
+        "$(get_icon 'edit')Edit Groups (Batch)…"
         "$(get_icon 'inspect')View Certificate and Key Details"
         "$(get_icon 'hour-glass')Certificate Expiry"
         "$(get_icon 'upload')Bundle / Export Client Certificate"
@@ -1755,6 +2092,7 @@ manage_nebula_certs() {
         "generate_nebula_ca"
         "generate_nebula_cert"
         "pki_rename_group_tui"
+        "pki_group_edit_tui"
         "view_cert_details"
         "list_certs_expiry"
         "pki_bundle_client_menu"
@@ -1877,6 +2215,8 @@ pki_cli() {
             select_cert_workspace ;;
         rename-group|rename_group|group-rename)
             rename_group_cli "$@" ;;
+        group|groups)
+            group_cli "$@" ;;
         *) log_error "Unknown 'cert' subcommand: $sub"; return 2 ;;
     esac
 }

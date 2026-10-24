@@ -83,6 +83,8 @@ MOCK
     # shellcheck source=/dev/null
     source "$REPO_ROOT/lib/pki.sh"
     # shellcheck source=/dev/null
+    source "$REPO_ROOT/lib/select.sh"
+    # shellcheck source=/dev/null
     source "$REPO_ROOT/lib/bench.sh"
     # shellcheck source=/dev/null
     source "$REPO_ROOT/lib/import.sh"

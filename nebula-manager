@@ -70,7 +70,7 @@ resolve_lib_dir() {
 }
 
 MANAGER_LIB_DIR="$(resolve_lib_dir)"
-for _mod in ui pki bench system import; do
+for _mod in ui pki select bench system import; do
     if [[ -r "$MANAGER_LIB_DIR/$_mod.sh" ]]; then
         # shellcheck source=/dev/null
         source "$MANAGER_LIB_DIR/$_mod.sh"
@@ -337,6 +337,15 @@ Commands:
                                   carries it (re-signs; keeps *.crt.bak).
                                   Options: --cert-dir DIR --yes
                                   Same as: cert rename-group
+  group list                      Show certificate names, IPs and groups
+  group add|remove <g> --select SPEC
+  group move <old> <new> --select SPEC
+  group set <g1,g2> --select SPEC  Replace all groups ('' clears)
+  group prune <g> --when SPEC     Remove <g> only from matches
+  group rename <old> <new>        Rename a group (alias for rename-group)
+                                  Selector: all|group:G|without:G|name:GLOB
+                                            ip:CIDR|cert:NAME; --exclude to subtract
+                                  Batch options: --dry-run --yes --cert-dir DIR
   bench server|client [...]       iperf3 benchmarks
   diag                            Diagnostics (TUN IP, UDP socket, cert expiry)
   dns status|setup|apply|persist|lighthouse
@@ -425,6 +434,7 @@ main() {
         cert|pki)       shift; pki_cli "$@" ;;
         rename-group|rename_group|group-rename)
                         shift; rename_group_cli "$@" ;;
+        group)          shift; group_cli "$@" ;;
         bench)          shift; bench_cli "$@" ;;
         diag|diagnose)  shift; diag_cli "$@" ;;
         dns)            shift; dns_cli "$@" ;;

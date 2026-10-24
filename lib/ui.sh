@@ -428,6 +428,121 @@ ui_yesno() {
     esac
 }
 
+# _ui_selection_indices <expr> <count>
+# Parse a plain-mode multi-selection: "all", "none", "1,3,5" or "2-4".
+# Prints 0-based indices, one per line, deduplicated in input order.
+_ui_selection_indices() {
+    local expr="$1" count="$2" tok
+    local -a toks=() out=() seen=()
+    IFS=', ' read -ra toks <<< "$expr"
+    for tok in "${toks[@]}"; do
+        [[ -z "$tok" ]] && continue
+        case "$tok" in
+            all|'*')
+                local i
+                for ((i=0; i<count; i++)); do out+=("$i"); done
+                ;;
+            none) : ;;
+            *-*)
+                local lo="${tok%-*}" hi="${tok#*-}"
+                [[ "$lo" =~ ^[0-9]+$ && "$hi" =~ ^[0-9]+$ ]] || return 1
+                (( lo >= 1 && hi >= lo && hi <= count )) || return 1
+                local i
+                for ((i=lo; i<=hi; i++)); do out+=("$((i-1))"); done
+                ;;
+            *)
+                [[ "$tok" =~ ^[0-9]+$ ]] || return 1
+                (( tok >= 1 && tok <= count )) || return 1
+                out+=("$((tok-1))")
+                ;;
+        esac
+    done
+    for tok in "${out[@]}"; do
+        local dup=0 s
+        for s in "${seen[@]}"; do [[ "$s" == "$tok" ]] && { dup=1; break; }; done
+        (( dup )) && continue
+        seen+=("$tok")
+        printf '%s\n' "$tok"
+    done
+    return 0
+}
+
+# _ui_checklist_geometry <prompt> <tag> <desc> <status> [...]
+# Reuses the menu geometry, then re-expands the truncated pairs into triples.
+_ui_checklist_geometry() {
+    local prompt="$1"; shift
+    local -a triples=("$@") pairs=() items=()
+    local i j=0
+    for ((i=0; i<${#triples[@]}; i+=3)); do
+        pairs+=("${triples[i]}" "${triples[i+1]}")
+    done
+    _ui_menu_geometry "$prompt" "${pairs[@]}"
+    for ((i=0; i<${#triples[@]}; i+=3)); do
+        items+=("${triples[i]}" "${_UI_PAIRS[j+1]}" "${triples[i+2]}")
+        j=$((j+2))
+    done
+    _UI_PAIRS=("${items[@]}")
+}
+
+# ui_checklist <title> <prompt> <tag> <desc> <on|off> [...]
+# Curses backends show a real checkbox list; plain mode lists [x]/[ ] items and
+# accepts "all", "none", "1,3,5" or "2-4" (empty input keeps the defaults).
+# Prints the selected tags, one per line. Returns 1 on cancel/EOF, 2 on invalid
+# input.
+ui_checklist() {
+    local title="$1" prompt="$2"; shift 2
+    local backend; backend="$(ui_backend)"
+    if (( $# == 0 || $# % 3 != 0 )); then
+        log_error "ui_checklist: expected tag/description/status triples"
+        return 2
+    fi
+    case "$backend" in
+        whiptail|dialog)
+            _ui_checklist_geometry "$prompt" "$@"
+            local out
+            if [[ "$backend" == whiptail ]]; then
+                out=$(whiptail --title "$title" --cancel-button "Back" --ok-button "Select" \
+                    --checklist "$prompt" "$_UI_H" "$_UI_W" "$_UI_MH" "${_UI_PAIRS[@]}" 3>&1 1>&2 2>&3) || return 1
+            else
+                out=$(dialog --title "$title" --cancel-button "Back" --ok-button "Select" \
+                    --checklist "$prompt" "$_UI_H" "$_UI_W" "$_UI_MH" "${_UI_PAIRS[@]}" 3>&1 1>&2 2>&3) || return 1
+            fi
+            local t
+            for t in $out; do
+                t="${t#\"}"; t="${t%\"}"
+                [[ -n "$t" ]] && printf '%s\n' "$t"
+            done
+            ;;
+        *)
+            echo -e "${BOLD}$title${RESET}" >&2
+            [[ -n "$prompt" ]] && echo -e "$prompt" >&2
+            local -a tags=() defaults=()
+            local i=0 status
+            while (( $# )); do
+                tags+=("$1"); status="${3:-off}"
+                if [[ "$status" == "on" || "$status" == "ON" || "$status" == "1" ]]; then
+                    printf "  ${BOLD}${YELLOW}%d.${RESET} [x] %s\n" "$((i+1))" "$2" >&2
+                    defaults+=("$i")
+                else
+                    printf "  ${BOLD}${YELLOW}%d.${RESET} [ ] %s\n" "$((i+1))" "$2" >&2
+                fi
+                i=$((i+1)); shift 3
+            done
+            local answer
+            read -rp "$(show_status 'question') Select [Enter=default, all, none, 1,3,5]: " answer || return 1
+            local raw idx
+            if [[ -z "$answer" ]]; then
+                for idx in "${defaults[@]}"; do printf '%s\n' "${tags[idx]}"; done
+                return 0
+            fi
+            raw="$(_ui_selection_indices "$answer" "${#tags[@]}")" || return 2
+            while IFS= read -r idx; do
+                [[ -n "$idx" ]] && printf '%s\n' "${tags[idx]}"
+            done <<< "$raw"
+            ;;
+    esac
+}
+
 # ui_input <title> <prompt> [default] ; prints entered value
 ui_input() {
     local title="$1" prompt="$2" default="${3:-}" backend value

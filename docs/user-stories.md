@@ -311,27 +311,45 @@ home machine (the framework, the ge75 and the new boxes) shares the same group,
 while the VPS is in `lighthouse,servers`. theprof wants a clearer name and room
 for more roles (`admin`, `mobile`, `students`).
 
-**TUI:** *Certificates ▸ Rename Group in Certificates*.
+**TUI:** *Certificates ▸ Edit Groups (Batch)…* — a filter, a checkbox list, then
+one action. Rename is just one of the actions.
 
-1. old group `laptops`; new group `home`;
-2. the preview lists exactly which certificates change and which do not (the
-   VPS is absent because it never carried `laptops`):
+1. filter `group:laptops`; confirm the three matches (the VPS is absent because
+   it never carried `laptops`);
+2. action **rename** `laptops` → `home`;
+3. the preview lists exactly which certificates change and which do not:
 
    ```text
 theprof-framework.theprof.mesh.crt (10.100.0.2/24): [laptops] -> [home]
 theprof-ge75.theprof.mesh.crt      (10.100.0.3/24): [laptops] -> [home]
    ```
 
-3. confirm, and each match is re-signed unprivileged. Name, IP, subnets and
+4. confirm, and each match is re-signed unprivileged. Name, IP, subnets and
 expiry are preserved, duplicates are removed, and every original is kept as
 `<name>.crt.bak`. The devices keep their existing private keys, so **nothing has
 to be re-installed on them** — they only need the refreshed `.crt` (copy it, or
 export a fresh bundle). *Not listed* certificates are byte-identical afterwards.
 
+While the selection is still active, *“Apply another action to the same
+selection?”* makes it easy to layer roles: **add** `admin` to the framework,
+**add** `mobile` to the phone, and so on.
+
+The same flow headlessly (the `group` command):
+
 ```bash
-$ nebula-manager rename-group laptops home --cert-dir ~/keys/nebula        # preview + confirm
-$ nebula-manager rename-group laptops home --cert-dir ~/keys/nebula --yes  # no prompt (scripts)
+$ nebula-manager group list --cert-dir ~/keys/nebula
+$ nebula-manager group rename laptops home --cert-dir ~/keys/nebula      # preview + confirm
+$ nebula-manager group add admin --select cert:theprof-framework.theprof.mesh --yes
+$ nebula-manager group move laptops home --select group:laptops --yes    # add+remove, one re-sign
+
+# conditional cleanup: drop 'laptops' only from machines that are already 'home'
+$ nebula-manager group prune laptops --when group:home --yes
 ```
+
+`group set "home,admin" --select name:theprof-*` replaces the whole list, and
+`--dry-run` previews any action without touching a certificate. Batch actions
+require an explicit `--select` (only `rename` defaults to `group:<old>`), and
+non-interactive runs refuse without `--yes`.
 
 A **single** machine can also just get a different/multiple group set by
 re-signing it explicitly (the key stays valid):
@@ -503,7 +521,7 @@ the student's machine.
 | Capability | Status |
 |---|---|
 | Create CA, sign certs, list/inspect/expiry, remove | ✅ today |
-| **Rename/migrate a group** across certs (`rename-group` / Certificates ▸ Rename Group) | ✅ today |
+| **Batch group editing** (add/remove/move/set/rename/prune with a selector) | ✅ today |
 | Unprivileged cert workspace (`--cert-dir` / `NEBULA_KEYS_DIR` / auto-detect) | ✅ today |
 | Client bundle (cert, key, `ca.crt`, config template) | ✅ today |
 | Tool config resolution + `config init/refresh/edit` (offline template) | ✅ today |
