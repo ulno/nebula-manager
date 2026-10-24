@@ -142,10 +142,10 @@ nebula-manager config edit          # replace [server.nebula-example1] with your
 $ nebula-manager server add theprof-framework --dir /etc/nebula --service nebula.service
 $ nebula-manager server add vps --role lighthouse --dir /etc/nebula --host vps.theprof.demo:4545
 $ nebula-manager cert list --cert-dir ~/keys/nebula
-  Name                          Type  IPs            Groups
-  TheprofMeshCA                    CA    -              -
-  theprof-framework.theprof.mesh      Cert  10.100.0.2/24  laptops
-  vps.theprof.mesh              Cert  10.100.0.1/24  lighthouse,servers
+name,type,ips,groups,subnets,from,to
+TheprofMeshCA,CA,N/A,None,None,260929,360926
+theprof-framework.theprof.mesh,Cert,10.100.0.2/24,laptops,None,260929,360926
+vps.theprof.mesh,Cert,10.100.0.1/24,lighthouse:servers,None,260929,360926
 ```
 
 Other subcommands: `server list` (table of `[server.*]` entries), `server remove NAME`,

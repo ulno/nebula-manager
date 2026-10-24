@@ -280,7 +280,8 @@ cert_select_tui() {
         tag="c$i"
         desc="${SEL_NAMES[i]}"
         [[ -n "${SEL_IPS[i]}" ]] && desc+=" (${SEL_IPS[i]})"
-        desc+=" [${SEL_GROUPS[i]:-no groups}]"
+        local gdisp="${SEL_GROUPS[i]:-no groups}"
+        desc+=" [${gdisp//,/:}]"
         triples+=( "$tag" "$desc" "on" )
     done
 
@@ -322,6 +323,7 @@ cert_group_list() {
         name="${SEL_NAMES[i]}"
         ips="${SEL_IPS[i]:-N/A}"
         groups="${SEL_GROUPS[i]:-None}"
+        groups="${groups//,/:}"
         if declare -F maxlen >/dev/null; then
             name="$(maxlen "$name" 36)"
             ips="$(maxlen "$ips" 20)"

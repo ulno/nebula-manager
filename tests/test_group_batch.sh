@@ -202,7 +202,7 @@ assert_eq "checklist: invalid input -> 2" "$rc" "2"
 # --- CLI --------------------------------------------------------------------
 list_out="$(bash "$REPO_ROOT/nebula-manager" --cert-dir "$keys" group list 2>&1)"
 assert_contains "CLI list shows a certificate" "$list_out" "alpha.mesh"
-assert_contains "CLI list shows groups"        "$list_out" "home,admin"
+assert_contains "CLI list shows groups"        "$list_out" "home:admin"
 
 cli_out="$(bash "$REPO_ROOT/nebula-manager" --cert-dir "$keys" group add cli --select cert:epsilon.mesh --yes 2>&1)"
 assert_eq "CLI add exit status" "$?" "0"

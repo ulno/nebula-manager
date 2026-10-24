@@ -2232,7 +2232,7 @@ _firewall_explain_direction() {
         cidr="$(yq -r ".firewall.${direction}[$i].cidr // \"\"" "$config")"
         lcidr="$(yq -r ".firewall.${direction}[$i].local_cidr // \"\"" "$config")"
         scope=""
-        [[ -n "$groups" ]] && scope="groups [$groups]"
+        [[ -n "$groups" ]] && scope="groups [${groups//,/:}]"
         [[ -n "$host" && "$host" != "any" ]] && scope="${scope:+$scope, }host $host"
         [[ -n "$cidr" ]] && scope="${scope:+$scope, }cidr $cidr"
         [[ -n "$lcidr" ]] && scope="${scope:+$scope, }local $lcidr"
@@ -2445,7 +2445,7 @@ configure_inbound_rules() {
             port=$(yq -r ".firewall.inbound[$i].port // \"any\"" "$config_file")
             proto=$(yq -r ".firewall.inbound[$i].proto // \"any\"" "$config_file")
             host=$(yq -r ".firewall.inbound[$i].host // \"any\"" "$config_file")
-            groups=$(yq -r ".firewall.inbound[$i].groups // [] | join(\", \")" "$config_file")
+            groups=$(yq -r ".firewall.inbound[$i].groups // [] | join(\":\")" "$config_file")
             cidr=$(yq -r ".firewall.inbound[$i].cidr // \"\"" "$config_file")
             local_cidr=$(yq -r ".firewall.inbound[$i].local_cidr // \"\"" "$config_file")
             printf " %-4s | %-8s | %-6s | %-15s | %-20s | %-20s | %-20s \n" \
@@ -2484,7 +2484,7 @@ configure_outbound_rules() {
             port=$(yq -r ".firewall.outbound[$i].port // \"any\"" "$config_file")
             proto=$(yq -r ".firewall.outbound[$i].proto // \"any\"" "$config_file")
             host=$(yq -r ".firewall.outbound[$i].host // \"any\"" "$config_file")
-            groups=$(yq -r ".firewall.outbound[$i].groups // [] | join(\", \")" "$config_file")
+            groups=$(yq -r ".firewall.outbound[$i].groups // [] | join(\":\")" "$config_file")
             cidr=$(yq -r ".firewall.outbound[$i].cidr // \"\"" "$config_file")
             local_cidr=$(yq -r ".firewall.outbound[$i].local_cidr // \"\"" "$config_file")
             printf " %-4s | %-8s | %-6s | %-15s | %-20s | %-20s | %-20s \n" \

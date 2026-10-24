@@ -94,17 +94,18 @@ _policy_rule_count() {
 policy_list() {
     local d; d="$(policy_dir)"
     local -a lines=()
-    local f name groups desc count
+    local f name groups desc count gdisp
     if [[ -d "$d" ]]; then
         for f in "$d"/*.yml; do
             [[ -f "$f" ]] || continue
             name="$(yq -r '.name // ""' "$f" 2>/dev/null)"
             [[ -n "$name" ]] || name="$(basename "$f" .yml)"
             groups="$(yq -r '.groups // [] | join(",")' "$f" 2>/dev/null)"
+            gdisp="${groups//,/:}"
             desc="$(yq -r '.description // ""' "$f" 2>/dev/null)"
             count="$(_policy_rule_count "$f")"
             lines+=("$(printf '  %-16s %-20s %4s rule(s)  %s' \
-                "$name" "${groups:-—}" "${count:-0}" "${desc}")")
+                "$name" "${gdisp:-—}" "${count:-0}" "${desc}")")
         done
     fi
     if (( ${#lines[@]} )); then

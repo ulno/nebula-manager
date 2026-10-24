@@ -690,42 +690,53 @@ list_certs() {
     local cert
     for cert in "$certs_dir"/*.crt; do
         [[ -f "$cert" ]] || continue
-        local json n t i g s nb na fp
+        local json n t i g s nb na
         json=$(nebula_cert_json "$bin_path" "$cert")
         n=$(jq -r '.details.name' <<<"$json")
         t=$(jq -r '.details.isCa' <<<"$json"); t=$([[ $t == true ]] && echo "CA" || echo "Cert")
         i=$(jq -r '.details.ips | join(", ")' <<<"$json"); [[ -z "$i" ]] && i="N/A"
-        g=$(jq -r '.details.groups | if length==0 then "None" else join(", ") end' <<<"$json")
+        g=$(jq -r '.details.groups | if length==0 then "None" else join(":") end' <<<"$json")
         s=$(jq -r '.details.subnets | if length==0 then "None" else join(", ") end' <<<"$json")
         nb=$(jq -r '.details.notBefore' <<<"$json")
         na=$(jq -r '.details.notAfter' <<<"$json")
-        fp=$(jq -r '.fingerprint' <<<"$json")
-        rows+=("$n|$t|$i|$g|$s|$nb|$na|$fp")
+        rows+=("$n|$t|$i|$g|$s|$(_cert_short_date "$nb")|$(_cert_short_date "$na")")
     done
 
     [[ ${#rows[@]} -eq 0 ]] && { log_warn "No certificates found in $certs_dir."; return; }
     local sorted
     IFS=$'\n' sorted=($(printf "%s\n" "${rows[@]}" | sort -t "|" -k6))
 
-    local border_len=158
-    printf "${CYAN}%${border_len}s${RESET}\n" | tr ' ' '-'
-    printf "${BOLD}${YELLOW} %-14s ${CYAN}|${YELLOW} %-4s ${CYAN}|${YELLOW} %-18s ${CYAN}|${YELLOW} %-18s ${CYAN}|${YELLOW} %-20s ${CYAN}|${YELLOW} %-20s ${CYAN}|${YELLOW} %-20s ${CYAN}|${YELLOW} %-16s ${RESET}\n" \
-        "Name" "Type" "IPs" "Groups" "Subnets" "Not Before" "Not After" "Fingerprint"
-    printf "${CYAN}%${border_len}s${RESET}\n" | tr ' ' '-'
-
-    local now; now=$(date -u +%s)
-    local row n t i g s nb na fp
+    # Plain CSV (no colours, no truncation): easy to read, copy or pipe.
+    printf '%s,%s,%s,%s,%s,%s,%s\n' name type ips groups subnets from to
+    local row n t i g s nb na
     for row in "${sorted[@]}"; do
-        IFS="|" read -r n t i g s nb na fp <<< "$row"
-        local epoch_nb epoch_na color_nb color_na
-        epoch_nb=$(date -d "$nb" +%s 2>/dev/null || echo 0)
-        epoch_na=$(date -d "$na" +%s 2>/dev/null || echo 0)
-        [[ $epoch_nb -le $now ]] && color_nb="${GREEN}" || color_nb="${WHITE}"
-        [[ $epoch_na -le $now ]] && color_na="${RED}" || color_na="${GREEN}"
-        printf " ${CYAN}%-14s${RESET} | ${ORANGE}%-4s${RESET} | ${GREEN}%-18s${RESET} | ${MAGENTA}%-18s${RESET} | ${YELLOW}%-20s${RESET} | ${color_nb}%-20s${RESET} | ${color_na}%-20s${RESET} | ${RED}%-16s${RESET}\n" \
-            "$(maxlen "$n" 14)" "$t" "$(maxlen "$i" 18)" "$(maxlen "$g" 18)" "$(maxlen "$s" 20)" "$nb" "$na" "$(maxlen "$fp" 20)"
+        IFS="|" read -r n t i g s nb na <<< "$row"
+        printf '%s,%s,%s,%s,%s,%s,%s\n' \
+            "$(_csv_field "$n")" "$(_csv_field "$t")" "$(_csv_field "$i")" \
+            "$(_csv_field "$g")" "$(_csv_field "$s")" "$(_csv_field "$nb")" "$(_csv_field "$na")"
     done
-    printf "${CYAN}%${border_len}s${RESET}\n" | tr ' ' '-'
+}
+
+# YYMMDD from an RFC3339 timestamp. The certificate's own date part is used so
+# the displayed day never shifts because of timezone conversion.
+_cert_short_date() {
+    local ts="$1"
+    if [[ "$ts" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2} ]]; then
+        printf '%s' "${ts:2:2}${ts:5:2}${ts:8:2}"
+    else
+        printf '%s' "$ts"
+    fi
+}
+
+# Quote a CSV field only when it needs it (comma, quote, newline or spaces).
+_csv_field() {
+    local v="$1"
+    if [[ "$v" == *,* || "$v" == *\"* || "$v" == *[[:space:]]* ]]; then
+        v="${v//\"/\"\"}"
+        printf '"%s"' "$v"
+    else
+        printf '%s' "$v"
+    fi
 }
 
 # list_certs_expiry [max_days]
@@ -1465,7 +1476,7 @@ pki_bundle_list() {
         found=1
         printf '  - %s' "$name"
         [[ -n "$ips" ]] && printf '  (%s)' "$ips"
-        [[ -n "$groups" ]] && printf '  [%s]' "$groups"
+        [[ -n "$groups" ]] && printf '  [%s]' "${groups//,/:}"
         printf '\n'
     done < <(pki_bundle_candidates "$dir")
     (( found )) || printf '  (none - a bundle needs both <name>.crt and <name>.key)\n'
