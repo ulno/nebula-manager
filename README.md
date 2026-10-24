@@ -418,7 +418,7 @@ headless subcommands for scripting — see *Expert / scriptable* below.
 | **Setup** | shows the **detected state** (config, Nebula service, cert workspace), then: import/update from this host, **import a client bundle (.zip/.tar.gz)**, create, browse, edit, delete `nebula-manager.conf`, manage servers, pick the certificate workspace |
 | **Servers** | list / add / enable-disable / remove `[server.*]` entries |
 | **Certificates** | list, create CA, sign, **edit groups in bulk** (add/remove/move/set/rename with a filter), view, expiry, **bundle/export** (pick from a list), revoke, switch workspace |
-| **Configuration** | validate / edit Nebula `config.yml` (service-owned files are edited on a working copy and saved once with a timestamped backup), edit firewall rules, **name resolution (Nebula DNS)** |
+| **Configuration** | validate / edit Nebula `config.yml` (service-owned files are edited on a working copy and saved once with a timestamped backup), edit firewall rules with a **group picker + rule templates + explain**, **name resolution (Nebula DNS)** |
 | **Connectivity** | ping every cert IP; optional `iperf3` test |
 | **Diagnostics** | TUN IP, listening UDP socket, certificate expiry; reads a service-owned config once with temporary sudo and caches the header values |
 | **Benchmarks** | `iperf3` server / client |
@@ -482,6 +482,12 @@ commands and any errors remain visible for verification. Use `--clear-screen`
 ./nebula-manager bench client 10.42.0.2 --time 15 --streams 4 --reverse
 ./nebula-manager diag                   # TUN IP, UDP socket, cert expiry
 
+# Firewall                   (TUI: Configuration ▸ Edit Firewall)
+./nebula-manager firewall explain --nebula-config /etc/nebula/config.yml
+#   ^ read-only: defaults, every rule, and how many certs each group rule matches
+./nebula-manager firewall groups --cert-dir ~/keys/nebula
+#   ^ groups available to rules, with member counts
+
 # Utilities
 ./nebula-manager paths                  # resolved config / key dirs, info cache + UI backend
 ./nebula-manager ui                     # which UI backend is active (menu + browse)
@@ -538,6 +544,63 @@ is the public endpoint and stays with public DNS.
 Limitations: the lighthouse only answers for hosts it has seen since it started;
 automatic client setup requires `systemd-resolved` (`resolvectl`). Without it,
 configure the lighthouse overlay IP as DNS for the Nebula interface manually.
+
+### Firewall for groups
+
+Nebula firewalls are **per host**, and rule `groups:` refer to the **peer's
+certificate groups**. nebula-manager therefore provides three layers:
+
+**1. Edit this host's rules with a group picker.**
+**Configuration ▸ Edit Firewall ▸ Inbound/Outbound rules ▸ add/edit** opens a
+checkbox list of every group found in the certificate workspace, with member
+counts (`home (3 cert(s))`). Current groups are pre-checked; you can uncheck,
+combine groups, or pick *Type a group name manually…* for a group that has no
+certificates yet. No free-text group syntax to remember.
+
+**2. Add common rules from templates.**
+**Configuration ▸ Edit Firewall ▸ Add a group-based rule from a template:**
+
+| Template | Result |
+|---|---|
+| Allow all from a group (inbound) | `port: any`, `proto: any`, `groups: [...]` |
+| Allow a TCP/UDP port from a group | needs port + protocol |
+| Allow SSH (tcp/22) from a group | fixed 22/tcp |
+| Allow all outbound to a group | the same, in `outbound` |
+| Restrict inbound to one group | the allow rule **plus** `inbound_action: drop` |
+
+**3. See what the policy actually does.**
+**Configuration ▸ Edit Firewall ▸ Show the effective policy** (or
+`firewall explain`) prints a readable summary and flags rule groups that no
+certificate carries (usually a typo):
+
+```text
+Nebula firewall: /etc/nebula/config.yml
+Inbound default:  drop
+Outbound default: accept
+
+Inbound rules (1):
+  #0  any      any     groups [home,admin] -> 3 cert(s) match
+
+Outbound rules (1):
+  #0  any      any     any peer
+
+Groups in workspace:
+  admin                1 cert(s)
+  home                 3 cert(s)
+```
+
+Before saving, the editor shows a **unified diff of the firewall section** and
+asks for confirmation; declining leaves the config untouched. Validation
+(`nebula -test`) and the timestamped backup still run on commit.
+
+```bash
+nebula-manager firewall explain [--nebula-config FILE] [--cert-dir DIR]
+nebula-manager firewall groups  [--cert-dir DIR]
+```
+
+Managing one policy across a **fleet** (rendering the same group rules into the
+bundles for every member of a group) is planned as **policy packs**; today the
+explained policy and the editor are always this host's.
 
 ### Global flags
 
@@ -791,6 +854,7 @@ What it covers:
 | `tests/test_dns.sh` | Nebula DNS: lighthouse `serve_dns` + UDP/53 firewall, client `resolvectl` DNS/domain setup, status output, static_host_map fallback |
 | `tests/test_rename_group.sh` | group migration: preview/scan, dedup + order, re-sign preserves name/IP/expiry, unaffected certs/keys byte-identical, `*.crt.bak`, no sudo, CLI `--yes`/non-tty refusal |
 | `tests/test_group_batch.sh` | selector grammar (`group`/`without`/`name` glob/`ip` CIDR/`cert`/union/exclude) + batch add/remove/move/set/prune, idempotency, `--dry-run`, non-tty refusal, `group list`, plain checklist parsing |
+| `tests/test_firewall_groups.sh` | firewall group discovery/counts, picker (defaults/manual/unknown groups), rule templates, editor picker wiring, explain (defaults/matches/typo warning), diff + save prompt, CLI |
 | `tests/pki.bats` | BATS mirror of the core unprivileged-PKI guarantees |
 
 Requirements: `bash`, `nebula-cert` (for PKI tests; auto-skipped otherwise).

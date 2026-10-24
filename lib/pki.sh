@@ -1895,7 +1895,7 @@ EOF
 }
 
 group_cli() {
-    if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    if [[ "${1:-}" == "-h" || "${1:-}" == "--help" || "${1:-}" == "help" ]]; then
         group_usage
         return 0
     fi

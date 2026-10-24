@@ -1985,29 +1985,412 @@ config_edit_cancel() {
     CONFIG_EDIT_SOURCE=""; CONFIG_EDIT_WORK=""; CONFIG_EDIT_TMP=""; CONFIG_EDIT_HASH=""
 }
 
+###################################################################
+################ Firewall groups / templates ######################
+###################################################################
+
+# firewall_known_groups [cert_dir]
+# Print "group<TAB>cert-count", most-used first. Quietly returns nothing when
+# there is no certificate workspace (e.g. a fresh host).
+firewall_known_groups() {
+    local cert_dir="${1:-$(resolve_cert_dir)}" f have=0 i g
+    [[ -d "$cert_dir" ]] || return 0
+    for f in "$cert_dir"/*.crt; do [[ -f "$f" ]] && { have=1; break; }; done
+    (( have )) || return 0
+    declare -F cert_select >/dev/null || return 0
+    cert_select "$cert_dir" --select all >/dev/null 2>&1 || return 0
+    (
+        local IFS=','
+        for i in "${!SEL_GROUPS[@]}"; do
+            for g in ${SEL_GROUPS[i]}; do
+                g="${g#"${g%%[![:space:]]*}"}"
+                g="${g%"${g##*[![:space:]]}"}"
+                [[ -n "$g" ]] && printf '%s\n' "$g"
+            done
+        done
+    ) | sort | uniq -c | sort -k1,1nr -k2,2 | awk '{ print $2 "\t" $1 }'
+}
+
+# firewall_pick_groups <current-csv>
+# Checkbox picker over the groups discovered in the certificate workspace (plus
+# any group already on the rule). Returns the chosen comma-separated list, or
+# non-zero on cancel. "Type a group name manually" adds groups with no certs.
+firewall_pick_groups() {
+    local current="${1:-}"
+    local -a known=() counts=() names=() triples=()
+    local g c i status found k
+    while IFS=$'\t' read -r g c; do
+        [[ -z "$g" ]] && continue
+        known+=("$g"); counts+=("$c")
+    done < <(firewall_known_groups)
+
+    # Keep groups that are already on the rule even if no cert carries them.
+    local IFS=','
+    for g in $current; do
+        g="${g#"${g%%[![:space:]]*}"}"
+        g="${g%"${g##*[![:space:]]}"}"
+        [[ -z "$g" ]] && continue
+        found=0
+        for k in "${known[@]}"; do [[ "$k" == "$g" ]] && { found=1; break; }; done
+        (( found )) || { known+=("$g"); counts+=("?"); }
+    done
+
+    for i in "${!known[@]}"; do
+        _pki_groups_have "$current" "${known[i]}" && status=on || status=off
+        names+=("${known[i]}")
+        triples+=( "g$i" "${known[i]} (${counts[i]} cert(s))" "$status" )
+    done
+    # With no known groups, preselect the manual entry so Enter leads somewhere.
+    if (( ${#known[@]} == 0 )); then
+        triples+=( "__manual__" "Type a group name manually…" "on" )
+    else
+        triples+=( "__manual__" "Type a group name manually…" "off" )
+    fi
+
+    local chosen tag
+    chosen="$(ui_checklist "Peer groups" \
+        "Groups this rule applies to (none = no group constraint)." "${triples[@]}")" || return 1
+
+    local -a picked=() selected=()
+    while IFS= read -r tag; do
+        [[ -n "$tag" ]] && selected+=("$tag")
+    done <<< "$chosen"
+    # Iterate the array (not stdin): the manual branch below prompts for input.
+    for tag in "${selected[@]}"; do
+        if [[ "$tag" == "__manual__" ]]; then
+            local extra
+            extra="$(ui_input "Peer groups" "Group name(s), comma-separated:")" || continue
+            [[ -n "$extra" ]] && picked+=("$extra")
+            continue
+        fi
+        i="${tag#g}"
+        [[ "$i" =~ ^[0-9]+$ ]] || continue
+        picked+=("${names[i]}")
+    done
+
+    # Join, split manual comma lists, validate, dedupe (order preserved).
+    local joined="" acc="" p
+    for p in "${picked[@]}"; do joined="${joined:+$joined,}$p"; done
+    local IFS=','
+    for p in $joined; do
+        p="${p#"${p%%[![:space:]]*}"}"
+        p="${p%"${p##*[![:space:]]}"}"
+        [[ -z "$p" ]] && continue
+        _pki_group_name_valid "$p" || { log_warn "Ignoring invalid group name: $p"; continue; }
+        _pki_groups_have "$acc" "$p" || acc="${acc:+$acc,}$p"
+    done
+    printf '%s' "$acc"
+}
+
+_firewall_port_valid() { [[ "$1" =~ ^(any|fragment|[0-9]+(-[0-9]+)?)$ ]]; }
+_firewall_proto_valid() { [[ "$1" =~ ^(any|tcp|udp|icmp)$ ]]; }
+
+# firewall_add_rule <config> <inbound|outbound> <port> <proto> <groups> [host] [cidr]
+firewall_add_rule() {
+    local config_file="$1" direction="$2" port="$3" proto="$4" groups="$5"
+    local host="${6:-}" cidr="${7:-}" prefix idx g
+    if [[ "$direction" != inbound && "$direction" != outbound ]]; then
+        log_error "Invalid firewall direction: $direction"; return 2
+    fi
+    _firewall_port_valid "$port"  || { log_error "Invalid port: $port"; return 2; }
+    _firewall_proto_valid "$proto" || { log_error "Invalid protocol: $proto"; return 2; }
+    prefix=".firewall.$direction"
+    if ! yq -e '.firewall' "$config_file" >/dev/null 2>&1; then
+        yq -i '.firewall = {}' "$config_file" || return 1
+    fi
+    if ! yq -e "$prefix" "$config_file" >/dev/null 2>&1; then
+        yq -i "$prefix = []" "$config_file" || return 1
+    fi
+    yq -i "$prefix += [{}]" "$config_file" || return 1
+    idx="$(yq "$prefix | length" "$config_file")"
+    idx=$(( idx - 1 ))
+    yq -i "${prefix}[$idx].port = \"$port\""  "$config_file" || return 1
+    yq -i "${prefix}[$idx].proto = \"$proto\"" "$config_file" || return 1
+    if [[ -n "$groups" ]]; then
+        yq -i "${prefix}[$idx].groups = []" "$config_file" || return 1
+        local IFS=','
+        for g in $groups; do
+            g="${g#"${g%%[![:space:]]*}"}"
+            g="${g%"${g##*[![:space:]]}"}"
+            [[ -n "$g" ]] && yq -i "${prefix}[$idx].groups += [\"$g\"]" "$config_file" || return 1
+        done
+    fi
+    [[ -n "$host" ]] && yq -i "${prefix}[$idx].host = \"$host\"" "$config_file"
+    [[ -n "$cidr" ]] && yq -i "${prefix}[$idx].cidr = \"$cidr\"" "$config_file"
+    return 0
+}
+
+# firewall_apply_template <config> <template> <groups> [port] [proto]
+# Non-interactive rule templates (also used by the TUI wrapper).
+firewall_apply_template() {
+    local config_file="$1" template="$2" groups="$3" port="${4:-any}" proto="${5:-any}"
+    case "$template" in
+        allow-any|allow-port)
+            firewall_add_rule "$config_file" inbound "$port" "$proto" "$groups" ;;
+        allow-ssh)
+            firewall_add_rule "$config_file" inbound 22 tcp "$groups" ;;
+        out-any)
+            firewall_add_rule "$config_file" outbound "$port" "$proto" "$groups" ;;
+        restrict)
+            firewall_add_rule "$config_file" inbound "$port" "$proto" "$groups" || return 1
+            yq -i '.firewall.inbound_action = "drop"' "$config_file" || return 1
+            ;;
+        *) log_error "Unknown firewall template: $template"; return 2 ;;
+    esac
+}
+
+# Interactive wrapper: menu -> pick groups -> append the rule.
+configure_firewall_templates() {
+    local config_file="${FIREWALL_CONFIG_EDIT:-${NEBULA_DIR:-/etc/nebula}/config.yml}"
+    local choice direction port proto groups summary
+    while true; do
+        choice="$(ui_menu "Firewall templates" "Group-based rules (added to the config being edited):" \
+            allow-any  "Allow all from a group (inbound)" \
+            allow-port "Allow a TCP/UDP port from a group (inbound)" \
+            allow-ssh  "Allow SSH (tcp/22) from a group (inbound)" \
+            out-any    "Allow all outbound to a group" \
+            restrict   "Restrict inbound to one group (sets inbound_action: drop)" \
+            back       "Go back")" || return 0
+        [[ "$choice" == back ]] && break
+        direction=inbound; port=any; proto=any
+        case "$choice" in
+            allow-port)
+                port="$(ui_input "Allow port" "Port (e.g. 22, 51820, 200-300):")" || continue
+                proto="$(ui_input "Allow port" "Protocol (tcp/udp):" "tcp")" || continue
+                ;;
+            allow-ssh) port=22; proto=tcp ;;
+            out-any)   direction=outbound ;;
+            allow-any|restrict) ;;
+            *) continue ;;
+        esac
+        groups="$(firewall_pick_groups "")" || { log_info "Canceled."; continue; }
+        if [[ -z "$groups" ]]; then
+            log_warn "No groups selected - nothing was added."
+            continue
+        fi
+        if firewall_apply_template "$config_file" "$choice" "$groups" "$port" "$proto"; then
+            summary="$direction $port/$proto from [$groups]"
+            [[ "$choice" == restrict ]] && summary+=" (inbound_action=drop)"
+            log_success "Added: $summary"
+        else
+            log_error "Could not add the rule."
+        fi
+        ui_yesno "Firewall templates" "Add another rule from a template?" || break
+    done
+}
+
+# _firewall_count_matching_certs <csv-groups> ; number of certs in any group.
+_firewall_count_matching_certs() {
+    local csv="$1" dir g
+    local -a args=()
+    dir="$(resolve_cert_dir)"
+    local IFS=','
+    for g in $csv; do
+        g="${g#"${g%%[![:space:]]*}"}"
+        g="${g%"${g##*[![:space:]]}"}"
+        [[ -n "$g" ]] && args+=(--select "group:$g")
+    done
+    (( ${#args[@]} )) || { printf '0'; return 0; }
+    if cert_select "$dir" "${args[@]}" >/dev/null 2>&1; then
+        printf '%s' "${#SEL_FILES[@]}"
+    else
+        printf '0'
+    fi
+}
+
+_firewall_explain_direction() {
+    local config="$1" direction="$2" n i port proto host groups cidr lcidr scope matched
+    n="$(yq ".firewall.$direction | length" "$config" 2>/dev/null)"
+    [[ "$n" =~ ^[0-9]+$ ]] || n=0
+    printf '\n%s rules (%d):\n' "${direction^}" "$n"
+    if (( n == 0 )); then
+        printf '  (none)\n'
+        return 0
+    fi
+    for (( i = 0; i < n; i++ )); do
+        port="$(yq -r ".firewall.${direction}[$i].port  // \"any\"" "$config")"
+        proto="$(yq -r ".firewall.${direction}[$i].proto // \"any\"" "$config")"
+        host="$(yq -r ".firewall.${direction}[$i].host  // \"\"" "$config")"
+        groups="$(yq -r ".firewall.${direction}[$i].groups // [] | join(\",\")" "$config")"
+        cidr="$(yq -r ".firewall.${direction}[$i].cidr // \"\"" "$config")"
+        lcidr="$(yq -r ".firewall.${direction}[$i].local_cidr // \"\"" "$config")"
+        scope=""
+        [[ -n "$groups" ]] && scope="groups [$groups]"
+        [[ -n "$host" && "$host" != "any" ]] && scope="${scope:+$scope, }host $host"
+        [[ -n "$cidr" ]] && scope="${scope:+$scope, }cidr $cidr"
+        [[ -n "$lcidr" ]] && scope="${scope:+$scope, }local $lcidr"
+        [[ -z "$scope" ]] && scope="any peer"
+        if [[ -n "$groups" ]]; then
+            matched="$(_firewall_count_matching_certs "$groups")"
+            scope+=" -> $matched cert(s) match"
+        fi
+        printf '  #%-2d %-8s %-6s  %s\n' "$i" "$port" "$proto" "$scope"
+    done
+}
+
+# firewall_explain [config_file]
+# Human-readable summary of this host's firewall (per-host by nature: rules
+# match the peer's certificate groups). Read-only; asks for one elevated read
+# only when the service-owned config is not readable.
+firewall_explain() {
+    local config="${1:-${NEBULA_DIR:-/etc/nebula}/config.yml}"
+    require_yq_v4 || return 1
+    local readable tmp=""
+    readable="$(readable_nebula_config "$config")" || readable=""
+    if [[ -z "$readable" ]]; then
+        log_error "Cannot read Nebula config at $config (permission denied)."
+        log_info "Approve the temporary sudo read when prompted, or pass --config with a readable copy."
+        return 1
+    fi
+    [[ "$readable" != "$config" ]] && tmp="$readable"
+
+    printf 'Nebula firewall: %s\n' "$config"
+    printf 'Inbound default:  %s\n' "$(yq -r '.firewall.inbound_action  // "drop"'   "$readable")"
+    printf 'Outbound default: %s\n' "$(yq -r '.firewall.outbound_action // "accept"' "$readable")"
+    _firewall_explain_direction "$readable" inbound
+    _firewall_explain_direction "$readable" outbound
+
+    local -A gcount=()
+    local g c
+    while IFS=$'\t' read -r g c; do
+        [[ -n "$g" ]] && gcount["$g"]="$c"
+    done < <(firewall_known_groups)
+    if (( ${#gcount[@]} > 0 )); then
+        printf '\nGroups in workspace:\n'
+        for g in "${!gcount[@]}"; do
+            printf '  %-20s %s cert(s)\n' "$g" "${gcount[$g]}"
+        done | sort
+    else
+        printf '\nGroups in workspace: (none found)\n'
+    fi
+
+    # Rules referring to groups that no certificate carries are almost always a typo.
+    local used
+    used="$(yq -r '[.firewall.inbound[]?.groups[]?, .firewall.outbound[]?.groups[]?] | unique | .[]' "$readable" 2>/dev/null)"
+    for g in $used; do
+        [[ -n "$g" && -z "${gcount[$g]:-}" ]] && \
+            log_warn "Group '$g' is used in a rule but no certificate in $(resolve_cert_dir) carries it."
+    done
+    [[ -n "$tmp" ]] && rm -f "$tmp"
+    return 0
+}
+
+# firewall_diff_text <before> <work> [label] ; unified diff of the firewall
+# section. Returns 0 (and prints the diff) when it changed, 1 when identical.
+firewall_diff_text() {
+    local src="$1" work="$2" label="${3:-$1}" a b
+    a="$(mktemp)"; b="$(mktemp)" || return 1
+    yq '.firewall // {}' "$src"  > "$a" 2>/dev/null
+    yq '.firewall // {}' "$work" > "$b" 2>/dev/null
+    if diff -q "$a" "$b" >/dev/null 2>&1; then
+        rm -f "$a" "$b"
+        return 1
+    fi
+    diff -u --label "before ($label)" --label "after" "$a" "$b" || true
+    rm -f "$a" "$b"
+    return 0
+}
+
+# firewall_commit_with_preview <before-file> <work> [source-label]
+# Show the firewall diff and ask before saving. Returns 1 when declined.
+firewall_commit_with_preview() {
+    local before="$1" work="$2" label="${3:-$1}" diff_text
+    diff_text="$(firewall_diff_text "$before" "$work" "$label")" || diff_text=""
+    [[ -z "$diff_text" ]] && return 0
+    ui_textbox "Firewall changes" "$diff_text"
+    ui_yesno "Firewall" "Save these firewall changes to $label?"
+}
+
+# Headless CLI: nebula-manager firewall explain|groups ...
+firewall_cli() {
+    if [[ "${1:-}" == "-h" || "${1:-}" == "--help" || "${1:-}" == "help" ]]; then
+        echo "Usage: nebula-manager firewall explain|groups [--nebula-config FILE] [--cert-dir DIR]" >&2
+        echo "  explain  human-readable rules, defaults and group match counts (read-only)" >&2
+        echo "  groups   certificate groups available to firewall rules, with counts" >&2
+        return 0
+    fi
+    local sub="${1:-explain}"; shift || true
+    local config="" cert_dir=""
+    while (( $# )); do
+        case "$1" in
+            --nebula-config|-f) shift; config="${1:-}" ;;
+            --nebula-config=*)  config="${1#*=}" ;;
+            --config)      shift; config="${1:-}" ;;   # when called directly
+            --config=*)    config="${1#*=}" ;;
+            --cert-dir)    shift; cert_dir="${1:-}" ;;
+            --cert-dir=*)  cert_dir="${1#*=}" ;;
+            -h|--help)
+                echo "Usage: nebula-manager firewall explain|groups [--nebula-config FILE] [--cert-dir DIR]" >&2
+                echo "  explain  human-readable rules, defaults and group match counts (read-only)" >&2
+                echo "  groups   certificate groups available to firewall rules, with counts" >&2
+                return 0 ;;
+            -*) log_error "Unknown option for 'firewall $sub': $1"; return 2 ;;
+            *)  log_error "Unexpected argument for 'firewall $sub': $1"; return 2 ;;
+        esac
+        shift
+    done
+    [[ -n "$cert_dir" ]] && CERT_DIR_OVERRIDE="$cert_dir"
+    case "$sub" in
+        explain|show)
+            firewall_explain "${config:-${NEBULA_DIR:-/etc/nebula}/config.yml}" ;;
+        groups|list-groups)
+            local out
+            out="$(firewall_known_groups "${cert_dir:-$(resolve_cert_dir)}")"
+            if [[ -z "$out" ]]; then
+                log_warn "No certificate groups found in ${cert_dir:-$(resolve_cert_dir)}."
+                return 1
+            fi
+            printf '%s\n' "$out" | awk -F'\t' '{ printf "%-20s %s cert(s)\n", $1, $2 }' ;;
+        *) log_error "Unknown 'firewall' subcommand: $sub"; return 2 ;;
+    esac
+}
+
 manage_firewall() {
     local source="${NEBULA_DIR:-/etc/nebula}/config.yml"
     [[ -f "$source" ]] || { log_error "Config file not found: $source"; return 1; }
     require_yq_v4 || return 1
     config_edit_begin "$source" || return 1
     local config_file="$CONFIG_EDIT_WORK"
+    # Snapshot the pre-edit state: an in-place writable config is modified as we
+    # go, so declining the final preview must restore this snapshot.
+    local before_file
+    before_file="$(mktemp)" || { config_edit_cancel; return 1; }
+    cp "$config_file" "$before_file" || { rm -f "$before_file"; config_edit_cancel; return 1; }
     FIREWALL_CONFIG_EDIT="$config_file"
+    local choice policy=""
     while true; do
         show_menu_header "$MENU_PATH" "Config" "Firewall"
         echo -e "        ${BOLD}${YELLOW}1.${RESET} $(get_icon 'left-arrow')Configure Inbound Rules ${GREEN}(Default Action: ${RED}$(yq -r ".firewall.inbound_action" "$config_file" 2>/dev/null)${GREEN})${RESET}"
         echo -e "        ${BOLD}${YELLOW}2.${RESET} $(get_icon 'right-arrow')Configure Outbound Rules ${GREEN}(Default Action: ${RED}$(yq -r ".firewall.outbound_action" "$config_file" 2>/dev/null)${GREEN})${RESET}"
         echo -e "        ${BOLD}${YELLOW}3.${RESET} $(get_icon 'security')Configure General Firewall Settings"
-        echo -e "        ${BOLD}${YELLOW}4.${RESET} $(get_icon 'back')${BOLD}Go Back${RESET}"
-        read -p "$(show_status 'question') Choose an option [1-4]: " choice
+        echo -e "        ${BOLD}${YELLOW}4.${RESET} $(get_icon 'create')Add a group-based rule from a template"
+        echo -e "        ${BOLD}${YELLOW}5.${RESET} $(get_icon 'inspect')Show the effective policy (read-only)"
+        echo -e "        ${BOLD}${YELLOW}6.${RESET} $(get_icon 'back')${BOLD}Go Back${RESET}"
+        read -p "$(show_status 'question') Choose an option [1-6]: " choice
         case "$choice" in
             1) configure_inbound_rules ;;
             2) configure_outbound_rules ;;
             3) configure_firewall_settings ;;
-            4) break ;;
+            4) configure_firewall_templates ;;
+            5)
+                policy="$(firewall_explain "$config_file")"
+                if [[ -n "$policy" ]]; then ui_textbox "Firewall policy" "$policy"; fi
+                ;;
+            6) break ;;
             *) log_error "Invalid option. Please choose again." ;;
         esac
     done
     FIREWALL_CONFIG_EDIT=""
+    if ! firewall_commit_with_preview "$before_file" "$config_file" "$source"; then
+        if [[ "$config_file" == "$source" ]]; then
+            cp "$before_file" "$source" 2>/dev/null || true
+        fi
+        rm -f "$before_file"
+        config_edit_cancel
+        log_info "Canceled - the config was not changed."
+        return 0
+    fi
+    rm -f "$before_file"
     config_edit_commit || return 1
     check_nebula_config "$source" "error"
 }
@@ -2116,10 +2499,12 @@ _edit_firewall_rule() {
         [host]="Host (e.g. any or hostname)"
         [cidr]="Remote CIDR (e.g. 0.0.0.0/0 or ::/0)"
         [local_cidr]="Local CIDR (e.g. 192.168.1.0/24)"
-        [groups]="Groups (comma-separated)"
     )
     if [[ "$index" == "append" ]]; then
         is_new=1
+        if ! yq -e "$prefix" "$config_file" >/dev/null 2>&1; then
+            yq -i "$prefix = []" "$config_file"
+        fi
         index=$(yq "$prefix | length" "$config_file")
         yq -i "$prefix += [{}]" "$config_file"
     fi
@@ -2157,17 +2542,20 @@ _edit_firewall_rule() {
             yq -i "${prefix}[${index}].${field} = \"$input\"" "$config_file"
         fi
     done
-    local current_groups; current_groups=$(yq -r "${prefix}[${index}].groups // [] | join(\", \")" "$config_file")
-    printf "${YELLOW}%s${RESET} [${CYAN}%s${RESET}]: " "${rule_fields[groups]}" "$current_groups"
-    read input
-    if [[ "$input" == "-" ]]; then
+    local current_groups picked
+    current_groups=$(yq -r "${prefix}[${index}].groups // [] | join(\",\")" "$config_file")
+    echo -e "${YELLOW}Peer groups${RESET} (current: ${CYAN}${current_groups:-none}${RESET})"
+    picked="$(firewall_pick_groups "$current_groups")" || {
+        log_info "Keeping the current groups."
+        picked="$current_groups"
+    }
+    if [[ -z "$picked" ]]; then
         yq -i "del(${prefix}[${index}].groups)" "$config_file"
-    elif [[ -n "$input" ]]; then
+    else
         yq -i "${prefix}[${index}].groups = []" "$config_file"
-        local -a groups; IFS=',' read -ra groups <<< "$input"
+        local -a groups; IFS=',' read -ra groups <<< "$picked"
         local g
         for g in "${groups[@]}"; do
-            g=$(echo "$g" | xargs)
             [[ -n "$g" ]] && yq -i "${prefix}[${index}].groups += [\"$g\"]" "$config_file"
         done
     fi

@@ -351,6 +351,9 @@ Commands:
   dns status|setup|apply|persist|lighthouse
                                   Nebula DNS: status, interactive setup, apply now,
                                   apply + boot hook, or enable on a lighthouse
+  firewall explain|groups [--nebula-config FILE] [--cert-dir DIR]
+                                  Read-only policy summary (rules, defaults,
+                                  per-group match counts) or list groups
   config path|init|refresh|edit|remove   Manage nebula-manager.conf (offline template)
   server add|list|remove|...      Manage [server.*] entries in nebula-manager.conf
   import [--dry-run] [--yes]      Detect a running Nebula and generate nebula-manager.conf
@@ -438,6 +441,7 @@ main() {
         bench)          shift; bench_cli "$@" ;;
         diag|diagnose)  shift; diag_cli "$@" ;;
         dns)            shift; dns_cli "$@" ;;
+        firewall|fw)    shift; firewall_cli "$@" ;;
         config|conf)    shift; config_cli "$@" ;;
         server|srv)     shift; server_cli "$@" ;;
         import)         shift; import_cli "$@" ;;

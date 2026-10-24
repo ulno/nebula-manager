@@ -361,9 +361,36 @@ $ nebula-manager sign --cert-dir ~/keys/nebula \
 ```
 
 or the same through *Certificates ▸ Generate Client Certificate* (answer **y**
-to the overwrite prompt). Afterwards **Configuration ▸ Edit Firewall** can use
-the new groups, e.g. allow all of `home` to talk to each other while keeping
-`students` separate.
+to the overwrite prompt).
+
+Finally he tightens the firewall with the new groups:
+
+**Configuration ▸ Edit Firewall ▸ Add a group-based rule from a template** →
+*Allow all from a group* → pick `home` (the picker shows `home (3 cert(s))`). If
+he wants to lock the host down completely, *Restrict inbound to one group* adds
+the allow rule **and** sets `inbound_action: drop`. Existing rules get the same
+picker under *add/edit*, so there is no free-text group syntax to remember.
+
+Before saving, the editor shows a diff of the `firewall:` section and asks once.
+*Show the effective policy* (or `nebula-manager firewall explain`) then verifies
+the result, including how many certificates each group rule actually matches and
+a warning for any rule group that no certificate carries:
+
+```text
+Inbound default:  drop
+Inbound rules (1):
+  #0  any      any     groups [home] -> 3 cert(s) match
+Groups in workspace:
+  home                 3 cert(s)
+```
+
+```bash
+$ nebula-manager firewall groups  --cert-dir ~/keys/nebula
+$ nebula-manager firewall explain --nebula-config /etc/nebula/config.yml
+```
+
+With that, `home` can talk to `home`, while `students` stay isolated (their
+future policy will use the same picker).
 
 > Note: an existing `.crt.bak` is never overwritten, so a second rename keeps
 the *original* certificate around for rollback.
@@ -522,6 +549,8 @@ the student's machine.
 |---|---|
 | Create CA, sign certs, list/inspect/expiry, remove | ✅ today |
 | **Batch group editing** (add/remove/move/set/rename/prune with a selector) | ✅ today |
+| **Firewall group picker + rule templates + `firewall explain`** (this host) | ✅ today |
+| **Policy packs** rendered into bundles for every member of a group | ⚙️ planned |
 | Unprivileged cert workspace (`--cert-dir` / `NEBULA_KEYS_DIR` / auto-detect) | ✅ today |
 | Client bundle (cert, key, `ca.crt`, config template) | ✅ today |
 | Tool config resolution + `config init/refresh/edit` (offline template) | ✅ today |
