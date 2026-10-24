@@ -80,6 +80,11 @@ assert_eq "plain forced for browse" "$(ui_browse_backend)" "plain"
 # numeric plain mode).
 assert_contains "plain checklist hint is numeric" "$(ui_checklist_hint)" "1,3-4"
 assert_not_contains "plain checklist hint avoids curses keys" "$(ui_checklist_hint)" "Space toggles"
+
+# The Enter label describes the actual pre-marked default.
+assert_eq "all marked -> Enter=all"       "$(_ui_checklist_enter_label 3 3)" "Enter=all"
+assert_eq "none marked -> Enter=none"     "$(_ui_checklist_enter_label 0 3)" "Enter=none"
+assert_eq "some marked -> Enter=keep [x]" "$(_ui_checklist_enter_label 2 3)" "Enter=keep [x]"
 if command -v whiptail >/dev/null 2>&1; then
     export NEBULA_UI=whiptail
     assert_contains "whiptail checklist hint mentions space" "$(ui_checklist_hint)" "Space toggles"

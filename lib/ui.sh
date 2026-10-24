@@ -512,6 +512,19 @@ ui_checklist_hint() {
     esac
 }
 
+# _ui_checklist_enter_label <marked-count> <total-count>
+# Describe what Enter does in plain mode based on the pre-marked items.
+_ui_checklist_enter_label() {
+    local marked="${1:-0}" total="${2:-0}"
+    if (( marked == 0 )); then
+        printf 'Enter=none'
+    elif (( marked >= total )); then
+        printf 'Enter=all'
+    else
+        printf 'Enter=keep [x]'
+    fi
+}
+
 # ui_checklist <title> <prompt> <tag> <desc> <on|off> [...]
 # Curses backends show a real checkbox list; plain mode lists [x]/[ ] items and
 # accepts "all", "none", "1,3,5" or "2-4" (empty input keeps the defaults).
@@ -556,8 +569,14 @@ ui_checklist() {
                 fi
                 i=$((i+1)); shift 3
             done
-            local answer
-            read -rp "$(show_status 'question') Select [Enter=default, all, none, 1,3,5]: " answer || return 1
+            local answer enter_label alternatives
+            enter_label="$(_ui_checklist_enter_label "${#defaults[@]}" "${#tags[@]}")"
+            case "$enter_label" in
+                "Enter=all")  alternatives="none, 1,3,5" ;;
+                "Enter=none") alternatives="all, 1,3,5" ;;
+                *)            alternatives="all, none, 1,3,5" ;;
+            esac
+            read -rp "$(show_status 'question') Select [$enter_label; or $alternatives]: " answer || return 1
             local raw idx
             if [[ -z "$answer" ]]; then
                 for idx in "${defaults[@]}"; do printf '%s\n' "${tags[idx]}"; done
