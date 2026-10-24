@@ -70,7 +70,7 @@ resolve_lib_dir() {
 }
 
 MANAGER_LIB_DIR="$(resolve_lib_dir)"
-for _mod in ui pki select bench system import policy; do
+for _mod in ui pki select bench system import policy store; do
     if [[ -r "$MANAGER_LIB_DIR/$_mod.sh" ]]; then
         # shellcheck source=/dev/null
         source "$MANAGER_LIB_DIR/$_mod.sh"
@@ -329,6 +329,9 @@ Commands:
                                   Sign a client cert (name/IP auto-suggested;
                                   --in-pub for mobile: the key stays on the device)
   cert list|expiry|remove          Certificate operations
+  cert store status|log|backup|git-init
+                                  Certificate-store history: action log,
+                                  datestamped backups or git snapshots
   cert bundle|export [NAME] [--out DIR]
                                   Export a client zip (NAME may be a unique
                                   substring; omit it to list candidates).
@@ -429,6 +432,9 @@ main() {
     parse_global_flags "$@"
     SERVER_CONF="$(resolve_server_conf)"
     set -- ${REMAINING_ARGS[@]+"${REMAINING_ARGS[@]}"}
+    # Record the triggering command in the certificate-store audit log.
+    NEBULA_MANAGER_CMDLINE="$SCRIPT_PATH${*:+ $*}"
+    export NEBULA_MANAGER_CMDLINE
     local cmd="${1:-}"
 
     case "$cmd" in
@@ -439,6 +445,7 @@ main() {
         ca)             shift; pki_ca_cli "$@" ;;
         sign)           shift; pki_sign_cli "$@" ;;
         cert|pki)       shift; pki_cli "$@" ;;
+        store|history)  shift; cert_store_cli "$@" ;;
         rename-group|rename_group|group-rename)
                         shift; rename_group_cli "$@" ;;
         group)          shift; group_cli "$@" ;;

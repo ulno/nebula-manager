@@ -395,6 +395,13 @@ future policy will use the same picker).
 > Note: an existing `.crt.bak` is never overwritten, so a second rename keeps
 the *original* certificate around for rollback.
 
+Every overwrite is also recorded in `<store>/nebula-manager.log` and preserved
+before the change: a datestamped `backups/<timestamp>-<seq>-<reason>/` folder
+(with the old certs/keys and `ACTION.txt`) for a plain store, or a
+`nebula-manager: pre-change snapshot` commit when the store is a git repo
+(private keys are never committed). *Certificates ▸ Store Backup / Git* or
+`nebula-manager cert store status|log|backup|git-init` shows and manages this.
+
 ### Phase 2d — One firewall policy for all home machines (✅ available)
 
 theprof has tuned the framework's firewall and now wants **the same rules on
@@ -604,6 +611,7 @@ the student's machine.
 | **Batch group editing** (add/remove/move/set/rename/prune with a selector) | ✅ today |
 | **Firewall group picker + rule templates + `firewall explain`** (this host) | ✅ today |
 | **Policy packs** (create, embed in bundles, apply here, export per host) | ✅ today |
+| **Store history** (action log, datestamped backups, optional git snapshots) | ✅ today |
 | Unprivileged cert workspace (`--cert-dir` / `NEBULA_KEYS_DIR` / auto-detect) | ✅ today |
 | Client bundle (cert, key, `ca.crt`, config template) | ✅ today |
 | Tool config resolution + `config init/refresh/edit` (offline template) | ✅ today |
@@ -613,6 +621,7 @@ the student's machine.
 | **`server add/list/remove/enable/disable`**: manage `[server.*]` entries | ✅ today |
 | **`client-setup <bundle>`**: install a bundle + service on a new host | ⚙️ planned |
 | **`profile create`**: group collections (N bundles + CA + README/install) | ⚙️ planned |
+| **Remote fleet push**: apply a rendered policy/config (and refreshed certs) over SSH | ⚙️ planned |
 | macOS `launchd` service management | ⚙️ planned |
 | Windows support (native) | ⚙️ planned (WSL documented) |
 

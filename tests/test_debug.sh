@@ -78,6 +78,17 @@ cat > "$FAKEBIN/nebula-cert" <<'FAKE'
 if [[ "${1:-}" == "print" && "${2:-}" == "-json" ]]; then
     printf '%s\n' '{"details":{"name":"fake","isCa":false,"ips":[],"groups":[],"subnets":[],"notBefore":"2026-01-01T00:00:00Z","notAfter":"2036-01-01T00:00:00Z"},"fingerprint":"abc"}'
 fi
+# Emulate the real tool's output files so signing can be verified.
+out=""; key=""
+while (($#)); do
+    case "$1" in
+        -out-crt) shift; out="${1:-}" ;;
+        -out-key) shift; key="${1:-}" ;;
+    esac
+    shift
+done
+[[ -n "$out" ]] && printf 'FAKE CERT\n' > "$out"
+[[ -n "$key" ]] && printf 'FAKE KEY\n' > "$key"
 exit 0
 FAKE
 cat > "$FAKEBIN/nebula" <<'FAKE'

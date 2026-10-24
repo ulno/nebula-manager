@@ -90,6 +90,8 @@ MOCK
     source "$REPO_ROOT/lib/import.sh"
     # shellcheck source=/dev/null
     source "$REPO_ROOT/lib/policy.sh"
+    # shellcheck source=/dev/null
+    source "$REPO_ROOT/lib/store.sh"
 
     trap 'rm -rf "$SANDBOX"' EXIT
 }

@@ -374,6 +374,42 @@ Use **Certificates ▸ Switch Certificate Workspace** to point the tool at a
 different store; the choice is persisted in
 `$XDG_CONFIG_HOME/nebula-manager/certdir`.
 
+### Store history, backups & git
+
+Every certificate-store write is recorded in **`<cert-dir>/nebula-manager.log`**
+(timestamp, user, host, action; mode `600`). Before a certificate is
+**overwritten, re-signed or removed**, the old state is preserved using one of
+two strategies:
+
+- **git mode** — if the store is inside a git work tree, pending certificate
+  changes are committed first (`nebula-manager: pre-change snapshot (…)`).
+  Private keys are **never** committed: `*.key`, `backups/`, `*.crt.bak`,
+  archives and QR images are excluded via a nested `.gitignore` and an explicit
+  staging pathspec.
+- **folder mode** — otherwise a datestamped folder is written:
+  ```text
+  <cert-dir>/backups/20261024-160032-000-sign-host1-overwrite/
+      host1.crt  host1.key  ACTION.txt        # files are mode 600
+  ```
+  `ACTION.txt` records time, user, host, reason and the file list.
+
+If a git commit cannot be made (no usable repo/identity), the tool **falls back
+to a folder backup**, so an overwrite is never left unprotected. Re-signing
+also signs into a temporary directory and only then installs the new files
+(`nebula-cert` itself refuses to overwrite).
+
+```bash
+nebula-manager cert store status
+nebula-manager cert store log -n 40
+nebula-manager cert store backup --reason "before classroom demo"
+nebula-manager cert store git-init      # safe: keys/backups are ignored
+```
+
+In the TUI: **Certificates ▸ Store Backup / Git** shows the VCS state, log size
+and backup count, and offers *snapshot now*, *initialize git*, *show the log*.
+When a folder backup is created and no git repo exists, a one-time hint points
+at `cert store git-init`.
+
 ### First run
 
 If no workspace is determined yet (no `--cert-dir`, no `NEBULA_KEYS_DIR`, no saved
@@ -926,6 +962,7 @@ What it covers:
 | `tests/test_group_batch.sh` | selector grammar (`group`/`without`/`name` glob/`ip` CIDR/`cert`/union/exclude) + batch add/remove/move/set/prune, idempotency, `--dry-run`, non-tty refusal, `group list`, plain checklist parsing |
 | `tests/test_firewall_groups.sh` | firewall group discovery/counts, picker (defaults/manual/unknown groups), rule templates, editor picker wiring, explain (defaults/matches/typo warning), diff + save prompt, CLI |
 | `tests/test_policy_packs.sh` | policy packs: create/list/show/validate, group-based suggestions, embedding in generated configs/bundles (CLI + TUI), per-host export, apply (working copy + `--yes`), delete, no sudo |
+| `tests/test_store_history.sh` | store action log; datestamped backups before overwrite/group/CA/remove; git snapshots with keys/backups excluded; CLI `cert store status/log/backup/git-init`; no sudo |
 | `tests/pki.bats` | BATS mirror of the core unprivileged-PKI guarantees |
 
 Requirements: `bash`, `nebula-cert` (for PKI tests; auto-skipped otherwise).
@@ -1102,6 +1139,14 @@ is *already running*, discover the installation and offer to generate
       public key (no `.key` written) and `--qr OUT.png` emits the QR scanned by
       **Mobile Nebula** (Android/iOS); also available in the TUI with the
       “Is this certificate for a phone/tablet?” prompt.
+- [x] **Batch group editing** – selector + add/remove/move/set/rename/prune.
+- [x] **Firewall policy packs** – group-targeted packs embedded in bundles,
+      applied locally, or exported per host for an existing fleet.
+- [x] **Certificate-store history** – action log, datestamped backups, optional
+      git snapshots (private keys always excluded).
+- [ ] **Remote fleet push** – push a rendered config/policy (and optionally
+      refreshed certificates) to hosts over SSH, using the `policy export`
+      output as the source; keep it explicit, host-scoped and dry-runnable.
 - [ ] **Pod/container support** – detect Nebula running under `podman`/`docker` and
       route lifecycle actions through the container runtime instead of `systemctl`.
 - [ ] **macOS `launchd`** service management; **Windows** guidance (WSL documented).

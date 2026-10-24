@@ -214,6 +214,9 @@ select_cert_workspace() {
     save_cert_dir_selection "$CERT_DIR_SELECTED"
     ensure_dir "$CERT_DIR_SELECTED" || { log_error "Could not create $CERT_DIR_SELECTED"; return 1; }
     log_success "Active certificate workspace set to: ${CYAN}$CERT_DIR_SELECTED${RESET}"
+    if declare -F cert_store_log >/dev/null; then
+        cert_store_log "$CERT_DIR_SELECTED" "workspace-select dir=\"$CERT_DIR_SELECTED\""
+    fi
     if [[ -n "${CERT_DIR_OVERRIDE:-}" || -n "${NEBULA_KEYS_DIR:-}" ]]; then
         log_warn "--cert-dir / NEBULA_KEYS_DIR is set and overrides this saved selection."
     fi
@@ -304,8 +307,16 @@ pki_ca_create() {
     [[ "${CA_ENCRYPT:-n}" == "y" ]] && args+=(-encrypt)
 
     ensure_dir "$cert_dir" || return 1
+    # Preserve the old CA (if any) before regenerating it.
+    if declare -F cert_store_snapshot_before >/dev/null; then
+        cert_store_snapshot_before "$cert_dir" "ca-create $name" \
+            "$cert_dir/ca.crt" "$cert_dir/ca.key" || true
+    fi
     rm -f "$cert_dir/ca.crt" "$cert_dir/ca.key"
     if debug_run "${args[@]}"; then
+        if declare -F cert_store_log >/dev/null; then
+            cert_store_log "$cert_dir" "ca-create name=\"$name\" duration=\"$duration\""
+        fi
         log_success "CA generated: $cert_dir/ca.key, $cert_dir/ca.crt"
         return 0
     fi
@@ -334,29 +345,62 @@ pki_sign() {
     fi
 
     local out_crt="$cert_dir/$name.crt"
+    local out_key="$cert_dir/$name.key"
+    local overwrite=0 used_pub=no
+    [[ -f "$out_crt" || -f "$out_key" ]] && overwrite=1
+    [[ -n "$in_pub" ]] && used_pub=yes
+    if (( overwrite )) && declare -F cert_store_snapshot_before >/dev/null; then
+        cert_store_snapshot_before "$cert_dir" "sign $name (overwrite)" "$out_crt" "$out_key" || true
+    fi
+    local tmpdir out_tmp key_tmp
+    tmpdir="$(mktemp -d)" || return 1
+    out_tmp="$tmpdir/$name.crt"
+    key_tmp="$tmpdir/$name.key"
     local -a args=("$bin" sign -name "$name" -ip "$ip"
         -ca-crt "$ca_crt" -ca-key "$ca_key"
-        -out-crt "$out_crt")
+        -out-crt "$out_tmp")
     if [[ -n "$in_pub" ]]; then
         args+=(-in-pub "$in_pub")      # no -out-key: the key stays on the device
     else
-        args+=(-out-key "$cert_dir/$name.key")
+        args+=(-out-key "$key_tmp")
     fi
     [[ -n "${SIGN_DURATION_H:-}" ]] && args+=(-duration "${SIGN_DURATION_H}h")
     [[ -n "${SIGN_GROUPS:-}"     ]] && args+=(-groups "$SIGN_GROUPS")
     [[ -n "${SIGN_SUBNETS:-}"    ]] && args+=(-subnets "$SIGN_SUBNETS")
     [[ -n "${SIGN_QR:-}"         ]] && args+=(-out-qr "$SIGN_QR")
 
-    ensure_dir "$cert_dir" || return 1
+    ensure_dir "$cert_dir" || { rm -rf "$tmpdir"; return 1; }
     if debug_run "${args[@]}"; then
+        # nebula-cert refuses to overwrite an existing crt/key, so sign to a
+        # temporary directory and install the result ourselves. The old files
+        # (when overwriting) were snapshotted above.
+        if ! cp "$out_tmp" "$out_crt"; then
+            log_error "Could not write $out_crt"
+            rm -rf "$tmpdir"
+            return 1
+        fi
+        chmod 644 "$out_crt" 2>/dev/null || true
+        if [[ -z "$in_pub" ]]; then
+            if ! cp "$key_tmp" "$out_key"; then
+                log_error "Could not write $out_key"
+                rm -rf "$tmpdir"
+                return 1
+            fi
+            chmod 600 "$out_key" 2>/dev/null || true
+        fi
+        rm -rf "$tmpdir"
+        if declare -F cert_store_log >/dev/null; then
+            cert_store_log "$cert_dir" "sign name=\"$name\" ip=\"$ip\" groups=\"${SIGN_GROUPS:-}\" overwrite=$overwrite in_pub=$used_pub"
+        fi
         if [[ -n "$in_pub" ]]; then
             log_success "Certificate signed for device key: $out_crt"
         else
-            log_success "Certificate signed: $out_crt and $cert_dir/$name.key"
+            log_success "Certificate signed: $out_crt and $out_key"
         fi
         [[ -n "${SIGN_QR:-}" ]] && log_success "QR code written: ${SIGN_QR}"
         return 0
     fi
+    rm -rf "$tmpdir"
     log_error "Failed to sign certificate."
     return 1
 }
@@ -783,7 +827,13 @@ pki_remove() {
     local name="$1" certs_dir="${2:-$(resolve_cert_dir)}"
     local crt_file="$certs_dir/$name.crt" key_file="$certs_dir/$name.key"
     if [[ -f "$crt_file" && -f "$key_file" ]]; then
+        if declare -F cert_store_snapshot_before >/dev/null; then
+            cert_store_snapshot_before "$certs_dir" "remove $name" "$crt_file" "$key_file" || true
+        fi
         rm -f "$crt_file" "$key_file" && log_success "Removed $crt_file and $key_file."
+        if declare -F cert_store_log >/dev/null; then
+            cert_store_log "$certs_dir" "remove name=\"$name\" snapshot=\"${CERT_STORE_LAST_SNAPSHOT:-none}\""
+        fi
     else
         log_error "Certificate $name not found in $certs_dir"
         return 1
@@ -844,6 +894,9 @@ revoke_cert() {
                 mv "$cert" "${base}.crt"
                 [[ -f "${base}.key.revoked" ]] && mv "${base}.key.revoked" "${base}.key"
                 log_info "Restored certificate: $(basename "$base")"
+                if declare -F cert_store_log >/dev/null; then
+                    cert_store_log "$certs_dir" "revoke-restore fingerprint=\"$fingerprint\""
+                fi
                 break
             fi
         done
@@ -880,10 +933,16 @@ revoke_cert() {
     local reason
     read -p "$(show_status 'question') Enter a reason for revocation: " reason
     if [[ "$revoke_by_name" == true ]]; then
+        if declare -F cert_store_snapshot_before >/dev/null; then
+            cert_store_snapshot_before "$certs_dir" "revoke $cert_name_or_fingerprint" "$cert_file" "$cert_key" || true
+        fi
         mv "$cert_file" "$cert_file.revoked"
         mv "$cert_key" "$cert_key.revoked"
     fi
     sed -i "/^ *blocklist:/a \ \ \ \ - $fingerprint # $reason" "$config_file"
+    if declare -F cert_store_log >/dev/null; then
+        cert_store_log "$certs_dir" "revoke name=\"${cert_name_or_fingerprint:-}\" fingerprint=\"$fingerprint\" reason=\"$reason\""
+    fi
     log_success "Added fingerprint ${CYAN}$fingerprint${GREEN} to blocklist with reason: ${MAGENTA}$reason${RESET}"
     local reload_choice
     read -p "$(show_status 'question') Reload Nebula service to apply changes? (y/n): " reload_choice
@@ -1482,11 +1541,17 @@ pki_bundle_client_zip() {
             || { log_error "Failed to create tar bundle."; rm -rf "$tmp"; return 1; }
         chmod 600 "$tarball" 2>/dev/null || true
         rm -rf "$tmp"
+        if declare -F cert_store_log >/dev/null; then
+            cert_store_log "$cert_dir" "bundle name=\"$name\" out=\"$tarball\" policy=\"${policy_path:+$(basename "$policy_path" .yml)}\""
+        fi
         log_warn "zip not found; wrote $tarball instead."
         printf '%s\n' "$tarball"
         return 0
     fi
     rm -rf "$tmp"
+    if declare -F cert_store_log >/dev/null; then
+        cert_store_log "$cert_dir" "bundle name=\"$name\" out=\"$zipfile\" policy=\"${policy_path:+$(basename "$policy_path" .yml)}\""
+    fi
     log_success "Client bundle created: $zipfile"
     log_info "Contains: ${name}.crt, ${name}.key, ca.crt, config.yml.template (keep it safe - it holds the private key)."
     printf '%s\n' "$zipfile"
@@ -1620,6 +1685,7 @@ pki_group_plan() {
             ;;
         *) log_error "Unknown group action: '$action'"; return 2 ;;
     esac
+    PKI_GROUP_ACTION="$action"
 
     if (( ${#SEL_FILES[@]} == 0 )); then
         log_warn "No certificates selected."
@@ -1703,6 +1769,18 @@ pki_group_apply() {
     ca_crt="$(find_ca_crt "$cert_dir")" || { log_error "CA certificate not found in $cert_dir"; return 1; }
     ca_key="$(find_ca_key "$cert_dir")" || { log_error "CA key not found in $cert_dir"; return 1; }
 
+    # Snapshot the old certificates/keys once, before re-signing any of them.
+    if declare -F cert_store_snapshot_before >/dev/null; then
+        local -a snapfiles=()
+        local k
+        for i in "${!PKI_RENAME_FILES[@]}"; do
+            snapfiles+=("${PKI_RENAME_FILES[i]}")
+            k="${PKI_RENAME_FILES[i]%.crt}.key"
+            [[ -f "$k" ]] && snapfiles+=("$k")
+        done
+        cert_store_snapshot_before "$cert_dir" "group-${PKI_GROUP_ACTION:-resign}" "${snapfiles[@]}" || true
+    fi
+
     local tmp; tmp="$(mktemp -d)" || return 1
     # A user-owned workspace needs no privileges at all. Only if the store (or
     # its CA key) lives in a root-owned location do we route the write steps
@@ -1771,6 +1849,9 @@ pki_group_apply() {
     done
     ELEVATE_REASON="$prev_reason"
     rm -rf "$tmp"
+    if declare -F cert_store_log >/dev/null; then
+        cert_store_log "$cert_dir" "group-${PKI_GROUP_ACTION:-resign} changed=$ok failed=$failed snapshot=\"${CERT_STORE_LAST_SNAPSHOT:-none}\""
+    fi
     log_info "Re-signed ${ok} certificate(s); ${failed} failed."
     (( failed == 0 ))
 }
@@ -2107,6 +2188,7 @@ manage_nebula_certs() {
         "$(get_icon 'upload')Bundle / Export Client Certificate"
         "$(get_icon 'revoke')Revoke Certificate"
         "$(get_icon 'keys')Switch Certificate Workspace"
+        "$(get_icon 'backup')Store Backup / Git"
         "$(get_icon 'error')Remove Certificate"
     )
     dynamic_menu_functions=(
@@ -2120,6 +2202,7 @@ manage_nebula_certs() {
         "pki_bundle_client_menu"
         "revoke_cert"
         "select_cert_workspace"
+        "cert_store_menu"
         "remove_cert"
     )
     dynamic_menu dynamic_menu_title dynamic_menu_options dynamic_menu_functions 1
@@ -2272,6 +2355,8 @@ pki_cli() {
             rename_group_cli "$@" ;;
         group|groups)
             group_cli "$@" ;;
+        store|history)
+            cert_store_cli "$@" ;;
         *) log_error "Unknown 'cert' subcommand: $sub"; return 2 ;;
     esac
 }
