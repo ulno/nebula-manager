@@ -90,7 +90,7 @@ init_remote_urls
 ###################################################################
 
 top_header() {
-    echo -e "$(show_status 'success') ${BOLD}${YELLOW}Server:${RESET} \e[38;5;$(hash_color_256 "$SERVER_NAME")m$SERVER_NAME${RESET}"
+    echo -e "$(show_status 'success') ${BOLD}${YELLOW}Instance:${RESET} \e[38;5;$(hash_color_256 "$SERVER_NAME")m$SERVER_NAME${RESET}"
     if check_nebula_installed; then
         LATEST_VERSION=$(get_latest_version)
         echo -e "$(show_status 'success') ${BOLD}${YELLOW}Nebula:${RESET} v$NEBULA_VERSION$([ "$NEBULA_VERSION" != "$LATEST_VERSION" ] && echo -e "${GREEN} ➜ ${RED}Update Available:${RESET} v$LATEST_VERSION${RESET}" || echo -e " ${GREEN}(Up to date)${RESET}")"
@@ -104,26 +104,26 @@ top_header() {
 }
 
 nebula_maintenance() {
-    dynamic_menu_title=("$MENU_PATH" "Maintenance")
-    dynamic_menu_options=("$(get_icon 'start')Toggle Nebula Service" "$(get_icon 'download')Update Nebula" "$(get_icon 'schedule')Auto-Update Scheduler" "$(get_icon 'install')Install Script to System" "$(get_icon 'uninstall')${ORANGE}Remove Nebula${RESET}")
-    dynamic_menu_functions=("toggle_nebula_service" "check_for_nebula_update" "auto_update_cron_menu" "ensure_installed_to_bin_path" "remove_nebula")
+    dynamic_menu_title=("$MENU_PATH" "Updates & Install")
+    dynamic_menu_options=("$(get_icon 'download')Update Nebula" "$(get_icon 'schedule')Auto-Update Scheduler" "$(get_icon 'install')Install Script to System" "$(get_icon 'uninstall')${ORANGE}Remove Nebula${RESET}")
+    dynamic_menu_functions=("check_for_nebula_update" "auto_update_cron_menu" "ensure_installed_to_bin_path" "remove_nebula")
     dynamic_menu dynamic_menu_title dynamic_menu_options dynamic_menu_functions 1
 }
 
-# --- TUI glue for the CLI capabilities (Servers / Setup / Diagnostics) --------
+# --- TUI glue for the CLI capabilities (Instances / Setup / Diagnostics) ------
 # Show the refreshed header after diagnostics: this is the explicit action that
 # reads a service-owned config (with temporary sudo) and caches the values.
 run_diagnostics_tui() { diagnostics_view; echo; show_system_info; }
 
 server_add_tui() {
     local name dir service role host enabled
-    name="$(ui_input "Add Server" "Server name (e.g. edge-1):")" || return
+    name="$(ui_input "Add Instance" "Instance name (e.g. edge-1):")" || return
     [[ -z "$name" ]] && return
-    dir="$(ui_input "Add Server" "Nebula dir:" "/etc/nebula/${name}")"
-    service="$(ui_input "Add Server" "systemd unit:" "nebula-${name}.service")"
-    role="$(ui_input "Add Server" "Role (client|lighthouse):" "client")"
-    host="$(ui_input "Add Server" "Public host:port (lighthouse; optional):" "")"
-    if ui_yesno "Add Server" "Enable '$name' for batch operations?"; then enabled=true; else enabled=false; fi
+    dir="$(ui_input "Add Instance" "Nebula dir:" "/etc/nebula/${name}")"
+    service="$(ui_input "Add Instance" "systemd unit:" "nebula-${name}.service")"
+    role="$(ui_input "Add Instance" "Role (client|lighthouse):" "client")"
+    host="$(ui_input "Add Instance" "Public host:port (lighthouse; optional):" "")"
+    if ui_yesno "Add Instance" "Enable '$name' for batch operations?"; then enabled=true; else enabled=false; fi
     SERVER_CONF="$(resolve_server_conf)"
     server_add_entry "$name" "$dir" "$service" "$enabled" "$role" "$host"
 }
@@ -131,9 +131,9 @@ server_add_tui() {
 server_toggle_tui() {
     server_list
     local name
-    name="$(ui_input "Enable/Disable" "Server name:")" || return
+    name="$(ui_input "Enable/Disable Instance" "Instance name:")" || return
     [[ -z "$name" ]] && return
-    if ui_yesno "Enable/Disable" "Enable '$name'? (No disables it)"; then
+    if ui_yesno "Enable/Disable Instance" "Enable '$name'? (No disables it)"; then
         server_set_enabled "$name" true
     else
         server_set_enabled "$name" false
@@ -143,16 +143,15 @@ server_toggle_tui() {
 server_remove_tui() {
     server_list
     local name
-    name="$(ui_input "Remove Server" "Server name to remove:")" || return
+    name="$(ui_input "Remove Instance" "Instance name to remove:")" || return
     [[ -z "$name" ]] && return
-    ui_yesno "Remove Server" "Remove [$name] from nebula-manager.conf?" && server_remove_entry "$name"
+    ui_yesno "Remove Instance" "Remove [$name] from nebula-manager.conf?" && server_remove_entry "$name"
 }
 
 server_menu() {
-    SERVER_CONF="$(resolve_server_conf)"
-    dynamic_menu_title=("$MENU_PATH" "Servers")
-    dynamic_menu_options=("$(get_icon 'list')List Servers" "$(get_icon 'create')Add Server" "$(get_icon 'edit')Enable / Disable Server" "$(get_icon 'delete')Remove Server")
-    dynamic_menu_functions=("server_list" "server_add_tui" "server_toggle_tui" "server_remove_tui")
+    dynamic_menu_title=("$MENU_PATH" "Nebula Instances")
+    dynamic_menu_options=("$(get_icon 'list')List Instances" "$(get_icon 'create')Add Instance" "$(get_icon 'edit')Enable / Disable Instance" "$(get_icon 'start')Service: Start / Stop" "$(get_icon 'delete')Remove Instance")
+    dynamic_menu_functions=("server_list" "server_add_tui" "server_toggle_tui" "toggle_nebula_service" "server_remove_tui")
     dynamic_menu dynamic_menu_title dynamic_menu_options dynamic_menu_functions 1
 }
 
@@ -208,7 +207,7 @@ _setup_menu_build() {
         "$(get_icon 'inspect')Browse for a config file"
         "$(get_icon 'edit')Edit config"
         "$(get_icon 'delete')Delete config"
-        "$(get_icon 'list')Manage servers"
+        "$(get_icon 'list')Manage instances"
         "$(get_icon 'keys')Certificate workspace"
         "$(get_icon 'refresh')Reload & continue"
     )
@@ -239,7 +238,7 @@ _setup_menu_refresh() {
 setup_menu() {
     SETUP_MENU_BOOTSTRAP=0
     _setup_menu_build 0
-    dynamic_menu_title=("$MENU_PATH" "Setup")
+    dynamic_menu_title=("$MENU_PATH" "Manager Setup")
     dynamic_menu dynamic_menu_title _SETUP_OPTS _SETUP_FNS 1 _setup_menu_refresh
     unset SETUP_MENU_BOOTSTRAP
 }
@@ -247,7 +246,7 @@ setup_menu() {
 bootstrap_menu() {
     SETUP_MENU_BOOTSTRAP=1
     _setup_menu_build 1
-    dynamic_menu_title=("$MENU_PATH" "Setup")
+    dynamic_menu_title=("$MENU_PATH" "Manager Setup")
     dynamic_menu dynamic_menu_title _SETUP_OPTS _SETUP_FNS 0 _setup_menu_refresh
     unset SETUP_MENU_BOOTSTRAP
 }
@@ -260,14 +259,14 @@ main_menu() {
         if [ ! -f "${NEBULA_DIR}/config.yml" ]; then
             setup_nebula_config
         fi
-        menu_options=("$(get_icon 'certificate')Certificates" "$(get_icon 'list')Servers" "$(get_icon 'configuration')Configuration" "$(get_icon 'connectivity')Connectivity" "$(get_icon 'scan')Diagnostics" "$(get_icon 'bench')Benchmarks" "$(get_icon 'download')Setup" "$(get_icon 'maintenance')Maintenance" "$(get_icon 'exit')${BOLD}Exit${RESET}")
+        menu_options=("$(get_icon 'certificate')Certificates" "$(get_icon 'list')Instances" "$(get_icon 'configuration')Instance Settings" "$(get_icon 'connectivity')Connectivity" "$(get_icon 'scan')Diagnostics" "$(get_icon 'bench')Benchmarks" "$(get_icon 'download')Manager Setup" "$(get_icon 'maintenance')Updates & Install" "$(get_icon 'exit')${BOLD}Exit${RESET}")
         menu_option_functions=("manage_nebula_certs" "server_menu" "manage_configuration" "check_node_connectivity" "run_diagnostics_tui" "run_benchmark" "setup_menu" "nebula_maintenance" "exit")
     else
-        menu_options=("$(get_icon 'install')Install Nebula" "$(get_icon 'list')Servers" "$(get_icon 'download')Setup" "$(get_icon 'exit')${BOLD}Exit${RESET}")
+        menu_options=("$(get_icon 'install')Install Nebula" "$(get_icon 'list')Instances" "$(get_icon 'download')Manager Setup" "$(get_icon 'exit')${BOLD}Exit${RESET}")
         menu_option_functions=("install_nebula" "server_menu" "setup_menu" "exit")
     fi
     menu_title=("$MENU_PATH")
-    dynamic_menu menu_title menu_options menu_option_functions 0
+    dynamic_menu menu_title menu_options menu_option_functions 0 instance_context_refresh
 }
 
 tui_main() {
@@ -286,7 +285,7 @@ tui_main() {
             top_header
             main_menu
         else
-            log_info "No usable server selected - opening Setup (import from this host, import a client bundle, create or browse for a config)."
+            log_info "No usable instance selected - opening Manager Setup (import from this host, import a client bundle, create or browse for a config)."
             bootstrap_menu
         fi
         # 'Reload & continue' sets TUI_RESTART so the whole flow starts over with
@@ -363,7 +362,9 @@ Commands:
                                   firewall, embed in bundles, apply or export
                                   per host for an existing fleet
   config path|init|refresh|edit|remove   Manage nebula-manager.conf (offline template)
-  server add|list|remove|...      Manage [server.*] entries in nebula-manager.conf
+  instance|server add|list|remove|enable|disable
+                                  Manage local Nebula instances ([server.*] in
+                                  nebula-manager.conf; 'server' is an alias)
   import [--dry-run] [--yes]      Detect a running Nebula and generate nebula-manager.conf
   import --bundle FILE [--dir DIR] [--yes] [--force] [--start]
                                   Install a client bundle (.zip/.tar.gz/.tgz/.tar)
@@ -463,7 +464,7 @@ main() {
         firewall|fw)    shift; firewall_cli "$@" ;;
         policy|policies) shift; policy_cli "$@" ;;
         config|conf)    shift; config_cli "$@" ;;
-        server|srv)     shift; server_cli "$@" ;;
+        server|srv|instance|instances) shift; server_cli "$@" ;;
         import)         shift; import_cli "$@" ;;
         ui)             ui_report ;;
         auto-update)

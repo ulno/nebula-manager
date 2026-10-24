@@ -14,7 +14,7 @@ unset CONF_OVERRIDE
 
 # --- no config yet: summary says so and still reports the cert store ---
 out="$(setup_state_summary)"
-assert_contains "summary reports missing config" "$out" "Config: none yet"
+assert_contains "summary reports missing config" "$out" "Manager config: none yet"
 assert_contains "summary reports a cert store"   "$out" "Certificates:"
 
 # --- manager conf with 2 enabled / 1 disabled server ---
@@ -24,8 +24,8 @@ printf '[global]\nbin_path=/usr/local/bin\n[server.a]\ndir=/etc/nebula\nenabled=
 
 assert_eq "counts only enabled servers" "$(_conf_count_enabled "$conf")" "2"
 out="$(setup_state_summary)"
-assert_contains "summary shows config path"    "$out" "Config: $conf"
-assert_contains "summary shows enabled count"  "$out" "2 server(s) enabled"
+assert_contains "summary shows config path"    "$out" "Manager config: $conf"
+assert_contains "summary shows enabled count"  "$out" "2 instance(s) enabled"
 
 # --- a Nebula config.yml is not a manager conf ---
 printf 'pki:\n  ca: ca.crt\nlisten:\n  port: 4545\n' > "$SANDBOX/nebula.yml"

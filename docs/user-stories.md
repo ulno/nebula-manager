@@ -31,16 +31,16 @@ Start the tool and everything is selectable from the text-graphical menus:
 
 | Menu | Use it for |
 |---|---|
-| **Setup** | shows the detected state, then Import/Update / Create / Browse / Edit / Delete config, Manage servers, Certificate Workspace |
-| **Servers** | List / Add / Enable-Disable / Remove `[server.*]` |
+| **Manager Setup** | shows the detected state, then Import/Update / **Import client bundle** / Create / Browse / Edit / Delete config, Manage instances, Certificate Workspace |
+| **Instances** | List / Add / Enable-Disable / Remove `[server.*]`, start/stop the service |
 | **Certificates** | List / Create CA / Sign / View / Expiry / **Bundle-export client zip** (pick from a list) / Revoke / Switch workspace |
-| **Configuration** | Validate / Edit Nebula `config.yml` / Firewall |
+| **Instance Settings** | Validate / Edit Nebula `config.yml` / Firewall / Name resolution |
 | **Connectivity** | ping all cert IPs (+ optional `iperf3`) |
 | **Diagnostics** | TUN ip, UDP socket, cert expiry |
 | **Benchmarks** | `iperf3` server / client |
-| **Maintenance** | service toggle / update / auto-update scheduler / install / remove |
+| **Updates & Install** | update / auto-update scheduler / install / remove |
 
-With no config yet, the tool opens **Setup** for you, showing what it detected
+With no config yet, the tool opens **Manager Setup** for you, showing what it detected
 on this host (Nebula installed? a config already present? cert workspace?) before
 offering to import, create or browse for one. The command lines shown in the
 phases below are the **expert/automation** equivalents of the same menus.
@@ -82,7 +82,7 @@ graph TD
 
 ### Phase 0 — Import the existing setup (✅ available)
 
-**TUI:** *Setup ▸ Import / update from this host*.
+**TUI:** *Manager Setup ▸ Import / update from this host*.
 
 Today he would have to create a config by hand. The **intended** experience is a
 single discovery pass (✅ available):
@@ -136,7 +136,7 @@ nebula-manager config edit          # replace [server.nebula-example1] with your
 
 ### Phase 1 — Register the existing members (✅ available)
 
-**TUI:** *Servers ▸ Add Server* (list/enable/disable/remove in the same menu).
+**TUI:** *Instances ▸ Add Instance* (list/enable/disable/remove in the same menu).
 
 ```bash
 $ nebula-manager server add theprof-framework --dir /etc/nebula --service nebula.service
@@ -154,7 +154,7 @@ the functional keys are `dir`, `service`, `enabled`.
 
 ### Phase 2 — Add home machines theprof3 and theprof4 (mostly ✅ today)
 
-**TUI:** *Servers ▸ Add Server*, *Certificates ▸ Generate Client Certificate*,
+**TUI:** *Instances ▸ Add Instance*, *Certificates ▸ Generate Client Certificate*,
 *Certificates ▸ Bundle Client Zip*.
 
 Sign certs unprivileged in the existing workspace. In the TUI the name and IP
@@ -214,7 +214,7 @@ writes, with backups), creates `nebula-manager.conf`, and reloads straight into
 the main menu. Then start the service and verify:
 
 ```bash
-./nebula-manager            # Maintenance -> Toggle Nebula Service
+./nebula-manager            # Instances -> Service: Start / Stop
 ./nebula-manager diag       # verify TUN ip, UDP socket, cert expiry
 ```
 
@@ -226,7 +226,7 @@ Headless equivalent:
 
 The import offers to enable and start `nebula.service` when it is installed but
 not running. To make names resolve, enable DNS **on the lighthouse** once:
-**Configuration ▸ Name resolution (Nebula DNS)** → serve DNS on the overlay
+**Instance Settings ▸ Name resolution (Nebula DNS)** → serve DNS on the overlay
 (`serve_dns`, port 53, firewall UDP/53). Then run the same menu on each client
 so `*.theprof.mesh` is routed to the lighthouse via `systemd-resolved`.
 
@@ -365,7 +365,7 @@ to the overwrite prompt).
 
 Finally he tightens the firewall with the new groups:
 
-**Configuration ▸ Edit Firewall ▸ Add a group-based rule from a template** →
+**Instance Settings ▸ Edit Firewall ▸ Add a group-based rule from a template** →
 *Allow all from a group* → pick `home` (the picker shows `home (3 cert(s))`). If
 he wants to lock the host down completely, *Restrict inbound to one group* adds
 the allow rule **and** sets `inbound_action: drop`. Existing rules get the same
@@ -408,7 +408,7 @@ theprof has tuned the framework's firewall and now wants **the same rules on
 every `home` machine**, including the ones already installed. He saves that
 firewall as a named **policy pack** and lets nebula-manager render it per host.
 
-**TUI:** *Configuration ▸ Edit Firewall ▸ Policy packs ▸ New pack from this
+**TUI:** *Instance Settings ▸ Edit Firewall ▸ Policy packs ▸ New pack from this
 host's firewall* → name `home`, suggested groups `home`.
 
 ```bash
@@ -520,8 +520,8 @@ sudo chmod +x /usr/local/bin/yq
 
 git clone https://github.com/<you>/nebula-manager
 cd nebula-manager
-./nebula-manager          # Setup -> Import client bundle -> bianca-nebula-bundle.zip
-./nebula-manager          # Maintenance -> Toggle Nebula Service
+./nebula-manager          # Manager Setup -> Import client bundle -> bianca-nebula-bundle.zip
+./nebula-manager          # Instances -> Service: Start / Stop
 ./nebula-manager diag     # confirm 10.101.0.x/24 up, cert valid
 ```
 

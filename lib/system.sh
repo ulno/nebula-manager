@@ -1228,19 +1228,41 @@ _conf_count_enabled() {
 # systemd unit, and the active certificate workspace. Used as the Setup/TUI
 # prompt so the first screen reflects the *detected* state instead of always
 # starting from a download. Never prompts (callers set NEBULA_NO_PROMPT=1).
+# Compact, path-focused context shown above the main and Instance Settings
+# menus. Plain text (no ANSI) so it renders in both plain and curses menus.
+instance_context_summary() {
+    local inst="${SERVER_NAME:-default}"
+    local svc; svc="$(basename "${NEBULA_SERVICE:-nebula.service}")"
+    local ncfg="${NEBULA_DIR:-/etc/nebula}/config.yml"
+    local mconf; mconf="${SERVER_CONF:-$(resolve_server_conf)}"
+    local cdir; cdir="$(resolve_cert_dir)"
+    local cc=""
+    printf 'Instance: %s (%s)\n' "$inst" "$svc"
+    printf 'Nebula config: %s\n' "$ncfg"
+    if [[ -d "$cdir" ]]; then
+        cc="$(find "$cdir" -maxdepth 1 -type f -name '*.crt' 2>/dev/null | wc -l | tr -d ' ')"
+        printf 'Certificates: %s (%s .crt)\n' "$cdir" "$cc"
+    else
+        printf 'Certificates: %s (missing)\n' "$cdir"
+    fi
+    printf 'Manager config: %s' "$mconf"
+}
+
+instance_context_refresh() { DYNAMIC_MENU_PROMPT="$(instance_context_summary)"; }
+
 setup_state_summary() {
     local conf; conf="$(resolve_server_conf)"
     local out=""
     if [[ -f "$conf" ]]; then
         if looks_like_manager_conf "$conf"; then
             local n; n="$(_conf_count_enabled "$conf")"
-            out+="Config: $conf"
-            out+=" ($n server(s) enabled)"
+            out+="Manager config: $conf"
+            out+=" ($n instance(s) enabled)"
         else
-            out+="Config: $conf (no [server.*] entries yet)"
+            out+="Manager config: $conf (no instances yet)"
         fi
     else
-        out+="Config: none yet ($conf)"
+        out+="Manager config: none yet ($conf)"
     fi
     out+=$'\n'
 
@@ -1407,7 +1429,7 @@ server_section_exists() {
 # Adds or replaces the [server.<name>] section in $SERVER_CONF.
 server_add_entry() {
     local name="$1" dir="${2:-}" service="${3:-}" enabled="${4:-true}" role="${5:-}" host="${6:-}"
-    [[ -n "$name" ]] || { log_error "server name is required"; return 2; }
+    [[ -n "$name" ]] || { log_error "instance name is required"; return 2; }
     _conf_ensure_exists || return 1
 
     local tmp; tmp="$(mktemp)"
@@ -1443,7 +1465,7 @@ server_remove_entry() {
         skip { next }
         { print }
     ' "$SERVER_CONF" > "$tmp"
-    _conf_write "$tmp" && log_success "Removed server '${name}'" || { rm -f "$tmp"; return 1; }
+    _conf_write "$tmp" && log_success "Removed instance '${name}'" || { rm -f "$tmp"; return 1; }
     rm -f "$tmp"
 }
 
@@ -1488,7 +1510,7 @@ server_entries() {
 server_list() {
     [[ -f "$SERVER_CONF" ]] || { log_error "No config: $SERVER_CONF"; return 1; }
     local rows; rows="$(server_entries)" || { log_error "Cannot read $SERVER_CONF"; return 1; }
-    [[ -n "$rows" ]] || { log_warn "No [server.*] entries in $SERVER_CONF"; return 0; }
+    [[ -n "$rows" ]] || { log_warn "No instances ([server.*]) in $SERVER_CONF"; return 0; }
     printf '%-20s %-8s %-24s %-24s %s\n' "Name" "Enabled" "Dir" "Service" "Role/Host"
     local n d sv en ro ho
     while IFS='|' read -r n d sv en ro ho; do
@@ -1549,7 +1571,7 @@ server_cli() {
         remove|rm|del)  server_remove_cli "$@" ;;
         enable)         server_toggle_cli enable "$@" ;;
         disable)        server_toggle_cli disable "$@" ;;
-        *) log_error "Unknown 'server' subcommand: $sub (add|list|remove|enable|disable)"; return 2 ;;
+        *) log_error "Unknown instance subcommand: $sub (add|list|remove|enable|disable)"; return 2 ;;
     esac
 }
 
@@ -1693,7 +1715,7 @@ select_nebula_server() {
     [[ -n "$conf_tmp" ]] && rm -f "$conf_tmp"
 
     if (( ${#servers[@]} == 0 )); then
-        log_error "No enabled [server.*] entries in ${CYAN}$SERVER_CONF"
+        log_error "No enabled instances ([server.*]) in ${CYAN}$SERVER_CONF"
         log_info "This must be a nebula-manager.conf (with [global] and [server.NAME]) - not Nebula's config.yml."
         return 1
     fi
@@ -1702,7 +1724,7 @@ select_nebula_server() {
     for s in "${servers[@]}"; do
         sname="${s%%$'\t'*}"
         [[ "$sname" == nebula-example* ]] && {
-            log_error "Placeholder server [$sname] found in ${CYAN}$SERVER_CONF${RED} - please replace it with your own servers."
+            log_error "Placeholder instance [$sname] found in ${CYAN}$SERVER_CONF${RED} - please replace it with your own instances."
             return 1
         }
     done
@@ -1712,7 +1734,7 @@ select_nebula_server() {
         IFS=$'\t' read -r server_name server_dir <<< "${servers[0]}"
         SELECTED_SERVER="$server_name"
     else
-        echo -e "${BOLD}${CYAN}Available Nebula Servers:${RESET}"
+        echo -e "${BOLD}${CYAN}Available Nebula Instances:${RESET}"
         local name_width=$(( $(printf "%s\n" "${servers[@]}" | awk -F'\t' '{print length($1)}' | sort -nr | head -n1) + 6 ))
         local i
         for i in "${!servers[@]}"; do
@@ -1735,7 +1757,7 @@ select_nebula_server() {
                 20 "$status" "$ip_net"
         done
         while true; do
-            read -p "$(show_status 'question') Choose a server [1-${#servers[@]}]: " choice
+            read -p "$(show_status 'question') Choose an instance [1-${#servers[@]}]: " choice
             if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#servers[@]} )); then
                 local server_name server_dir
                 IFS=$'\t' read -r server_name server_dir <<< "${servers[$((choice-1))]}"
@@ -2979,8 +3001,8 @@ dns_cli() {
 }
 
 manage_configuration() {
-    dynamic_menu_title=("$MENU_PATH" "Configuration Management")
+    dynamic_menu_title=("$MENU_PATH" "Instance Settings")
     dynamic_menu_options=("$(get_icon 'validate')Validate Config" "$(get_icon 'configuration')Edit Config" "$(get_icon 'firewall')Edit Firewall" "$(get_icon 'connectivity')Name resolution (Nebula DNS)")
     dynamic_menu_functions=("check_nebula_config \"$NEBULA_DIR/config.yml\" \"error\"" "edit_nebula_config" "manage_firewall" "manage_name_resolution")
-    dynamic_menu dynamic_menu_title dynamic_menu_options dynamic_menu_functions 1
+    dynamic_menu dynamic_menu_title dynamic_menu_options dynamic_menu_functions 1 instance_context_refresh
 }

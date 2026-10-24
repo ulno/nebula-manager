@@ -70,4 +70,11 @@ assert_eq "CLI PKI needed no sudo" "$(sudo_count)" "0"
 out="$("$NM" --cert-dir "$d" cert list 2>/dev/null)"
 assert_contains "cert list shows node1" "$out" "node1"
 
+# --- 'instance' is accepted as an alias for 'server' -------------------------
+inst_conf="$SANDBOX/instances.conf"
+printf '[global]\n[server.alpha]\ndir=/etc/nebula\nenabled=true\n[server.beta]\nenabled=false\n' > "$inst_conf"
+out="$(NEBULA_MANAGER_CONF="$inst_conf" "$NM" instance list 2>&1)"
+assert_contains "instance list alias lists alpha" "$out" "alpha"
+assert_contains "instance list alias lists beta"  "$out" "beta"
+
 harness_summary
