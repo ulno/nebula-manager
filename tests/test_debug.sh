@@ -118,6 +118,27 @@ out="$(CERT_DIR="$SANDBOX/pki" SIGN_NAME="node1" SIGN_IP="10.9.9.2/24" \
 assert_contains "learn: sign command shown" "$(cat "$ERR")" "nebula-cert sign -name node1 -ip 10.9.9.2/24"
 assert_contains "learn: sign success still logged" "$out" "Certificate signed"
 
+# The exact command shown is also appended to the certificate-store log, and a
+# human-readable note explains what is happening.
+audit_log="$SANDBOX/pki/nebula-manager.log"
+assert_file "learn: store audit log created" "$audit_log"
+assert_contains "learn: command recorded in the store log" "$(cat "$audit_log")" "exec cmd="
+assert_contains "learn: recorded command names nebula-cert" "$(cat "$audit_log")" "nebula-cert sign -name node1"
+assert_contains "learn: explanation printed" "$(cat "$ERR")" "[learn] note:"
+
+# Without learn, commands are not appended (the action itself is still logged).
+before_cmds="$(grep -c 'exec cmd=' "$audit_log" 2>/dev/null || true)"
+CERT_DIR="$SANDBOX/pki" SIGN_NAME="node2" SIGN_IP="10.9.9.3/24" \
+    DEBUG=log pki_sign >/dev/null 2>&1
+after_cmds="$(grep -c 'exec cmd=' "$audit_log" 2>/dev/null || true)"
+assert_eq "log mode: commands are not recorded" "$after_cmds" "$before_cmds"
+
+# `all` is the verbose super-set of learn.
+out="$(CERT_DIR="$SANDBOX/pki" SIGN_NAME="node3" SIGN_IP="10.9.9.4/24" \
+    DEBUG=all pki_sign 2>"$ERR")"
+assert_contains "all: command shown" "$(cat "$ERR")" "nebula-cert sign -name node3"
+assert_contains "all: command also recorded" "$(cat "$audit_log")" "nebula-cert sign -name node3"
+
 # Version probe: command shown, value captured cleanly.
 DEBUG=learn check_nebula_installed 2>"$ERR"
 assert_eq "learn: version captured cleanly" "$NEBULA_VERSION" "v9.9.9"

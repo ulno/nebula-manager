@@ -408,7 +408,9 @@ nebula-manager cert store git-init      # safe: keys/backups are ignored
 In the TUI: **Certificates ▸ Store Backup / Git** shows the VCS state, log size
 and backup count, and offers *snapshot now*, *initialize git*, *show the log*.
 When a folder backup is created and no git repo exists, a one-time hint points
-at `cert store git-init`.
+at `cert store git-init`. With `DEBUG=learn`/`all`, every command shown on the
+terminal is also appended to this log as `exec cmd="…"`, including the notes
+that explain each step.
 
 ### First run
 
@@ -742,18 +744,21 @@ firewall diff/confirm still applies on the way out), shown, edited or deleted.
 
 ### Debug modes (`DEBUG` / `--debug`)
 
-`DEBUG=learn` is the teaching mode: **every `nebula` / `nebula-cert` command is
-printed (to stderr) immediately before it runs**, so you can watch — and later
-reproduce — what the menus actually do. Normal output is unchanged and stdout
-stays clean for scripts. `-l` and `--learn` are direct shortcuts for
-`--debug=learn`.
+`DEBUG=learn` is the teaching mode: **every command is printed (to stderr)
+immediately before it runs**, together with a short `note:` explaining what the
+step does and why. This lets you watch — and later reproduce — what the menus
+actually do. Normal output is unchanged and stdout stays clean for scripts. At
+`learn`/`all` level, the **same command line is also appended to the active
+certificate store's audit log** (`<cert-dir>/nebula-manager.log`) as
+`exec cmd="…"`, so a later review shows exactly what ran. `-l` and `--learn`
+are direct shortcuts for `--debug=learn`.
 
 | Level | What you see |
 |---|---|
 | `warn` | only warnings/errors (hides normal info/success lines) |
 | `log` | classic output (the default when `DEBUG` is unset) |
 | `info` | classic output + resolved config/cert-dir and binary detection (stderr) |
-| `learn` | classic output + each Nebula CLI command before execution (stderr) |
+| `learn` | classic output + a note and each command before execution (stderr), also written to the store log |
 | `all` | `info` + `learn` |
 
 Levels can be combined, e.g. `DEBUG=warn,learn` (quiet, but show commands).
@@ -779,9 +784,22 @@ DEBUG=all ./nebula-manager cert list > certs.txt
 The learn lines look like:
 
 ```text
+[learn] note: Signing 'host2' for overlay IP(s) '10.42.0.3/24' with groups 'servers' using the CA in /home/you/keys/nebula.
+[learn] note: A new private key (.key) is written next to the certificate; deliver it only to that device.
+[learn] note: Snapshotting /home/you/keys/nebula before changes (git commit when tracked, otherwise a datestamped backups/ folder).
 [learn] /usr/bin/nebula-cert sign -name host2 -ip 10.42.0.3/24 -ca-crt ... -ca-key ... -out-crt ... -out-key ...
 [learn] sudo systemctl restart nebula.service
 ```
+
+The same commands are then in the store log:
+
+```text
+2026-10-24T16:30:12+02:00 user=you host=... exec cmd="/usr/bin/nebula-cert sign -name host2 -ip 10.42.0.3/24 ..."
+2026-10-24T16:30:12+02:00 user=you host=... sign name="host2" ip="10.42.0.3/24" groups="servers" overwrite=0 in_pub=no
+```
+
+Command logging is tied to `learn`/`all`; at the default `log` level only the
+higher-level actions are recorded.
 
 ---
 
@@ -952,7 +970,7 @@ What it covers:
 | `tests/test_update.sh` | update source resolution (origin/env) + no-downgrade version comparison |
 | `tests/test_realstore_readonly.sh` | uses a real cert store **read-only** (hashes unchanged, no `sudo`) |
 | `tests/test_cli.sh` | CLI parsing, flag precedence, usage/exit codes, end-to-end unprivileged PKI |
-| `tests/test_debug.sh` | `DEBUG` levels: `learn` prints Nebula CLI commands to stderr only, `warn` hides info, stdout stays clean |
+| `tests/test_debug.sh` | `DEBUG` levels: `learn` prints notes + commands to stderr only, mirrors them into the store audit log, `warn` hides info, stdout stays clean |
 | `tests/test_bundle.sh` | client export: candidate listing, substring/ambiguous matching, default output dir, TUI picker, mode 0600 |
 | `tests/test_client_config.sh` | generated client template: real static_host_map/lighthouse/punchy/listen/tun/firewall from the local config, `[server.*]` fallback, and missing-value warnings |
 | `tests/test_edit.sh` | privileged-safe config editing: working copy for read-only/unreadable configs, elevated write-back, timestamped backup, and no-op when nothing changed |

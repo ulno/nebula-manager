@@ -203,16 +203,36 @@ debug_info() {
     printf '%b %s\n' "$prefix" "$*" >&2
 }
 
-# debug_print_cmd <cmd> [args...] : show a command exactly as it will run.
-debug_print_cmd() {
-    debug_want learn || return 0
-    local a quoted out="" prefix="[learn]"
-    [[ "${USE_COLOR:-true}" != "false" ]] && prefix="${CYAN}[learn]${RESET}"
+# debug_format_cmd <cmd> [args...] : shell-escaped one-liner, shared by the
+# learn printer and the certificate-store audit log so both show the same text.
+debug_format_cmd() {
+    local a quoted out=""
     for a in "$@"; do
         printf -v quoted '%q' "$a"
         out+="${out:+ }$quoted"
     done
+    printf '%s' "$out"
+}
+
+# debug_explain <message...> : human-readable context for learn mode (stderr).
+debug_explain() {
+    debug_want learn || return 0
+    local prefix="[learn]"
+    [[ "${USE_COLOR:-true}" != "false" ]] && prefix="${CYAN}[learn]${RESET}"
+    printf '%b note: %s\n' "$prefix" "$*" >&2
+}
+
+# debug_print_cmd <cmd> [args...] : show a command exactly as it will run.
+# In learn mode it is also appended to the certificate-store audit log.
+debug_print_cmd() {
+    debug_want learn || return 0
+    local out prefix="[learn]"
+    [[ "${USE_COLOR:-true}" != "false" ]] && prefix="${CYAN}[learn]${RESET}"
+    out="$(debug_format_cmd "$@")"
     printf '%b %s\n' "$prefix" "$out" >&2
+    if declare -F cert_store_log_command >/dev/null; then
+        cert_store_log_command "$out"
+    fi
 }
 
 # debug_run <cmd> [args...] : print (learn mode) then execute.

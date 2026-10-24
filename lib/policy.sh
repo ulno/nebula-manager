@@ -166,6 +166,7 @@ policy_apply_to_config() {
     local config="$1" pack="$2"
     [[ -f "$config" ]] || { log_error "Config not found: $config"; return 1; }
     policy_validate "$pack" || return 1
+    debug_explain "Replacing only the firewall section of $config with policy pack '$(basename "$pack" .yml)'; certificates and other settings stay unchanged."
     if ! FW_FILE="$pack" yq -i '.firewall = (load(strenv(FW_FILE)) | .firewall)' "$config"; then
         log_error "Could not apply $pack to $config"
         return 1
@@ -235,6 +236,7 @@ policy_export() {
     [[ -n "$out_dir" ]] || out_dir="${PWD:-$HOME}/policies"
     out_dir="${out_dir/#\~/$HOME}"
     mkdir -p "$out_dir" || { log_error "Cannot create $out_dir"; return 1; }
+    debug_explain "Rendering policy '$pack' per host under $out_dir; no remote host is contacted."
 
     local i name dir count=0
     for i in "${!SEL_FILES[@]}"; do

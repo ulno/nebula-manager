@@ -314,7 +314,8 @@ Global options:
   --keys-dir <path>     Alias for NEBULA_KEYS_DIR (certificate workspace)
   --ui <backend>        UI backend: auto|plain|whiptail|dialog (auto = plain menus)
   --debug <levels>      Debug mode: warn|log|info|learn|all (comma-separated)
-                        learn prints every Nebula CLI command before running it
+                        learn prints a note + each command before running it and
+                        records the commands in the cert-store audit log
   -l, --learn           Shorthand for --debug=learn
   --clear-screen        Clear the screen between TUI redraws (default: keep transcript)
   --no-clear-screen     Keep the transcript (default)
@@ -381,7 +382,8 @@ Environment:
   NEBULA_MANAGER_REF   branch to use for update checks (default: main)
   NEBULA_UI            UI backend override
   DEBUG                Debug levels: warn|log|info|learn|all
-                        (same as --debug; learn shows the Nebula CLI commands)
+                        (same as --debug; learn shows notes + commands and
+                        mirrors the commands into the cert-store log)
   NEBULA_CLEAR_SCREEN  Set to 1 to clear between TUI redraws (default: off)
 
 Update checks follow your repo (git origin -> NEBULA_MANAGER_REPO -> upstream).
@@ -435,6 +437,12 @@ main() {
     # Record the triggering command in the certificate-store audit log.
     NEBULA_MANAGER_CMDLINE="$SCRIPT_PATH${*:+ $*}"
     export NEBULA_MANAGER_CMDLINE
+    # Commands shown by DEBUG=learn are also appended to the active store's log.
+    CERT_STORE_AUDIT_DIR="${CERT_DIR_OVERRIDE:-${NEBULA_KEYS_DIR:-}}"
+    if [[ -z "$CERT_STORE_AUDIT_DIR" ]]; then
+        CERT_STORE_AUDIT_DIR="$(resolve_cert_dir)"
+    fi
+    export CERT_STORE_AUDIT_DIR
     local cmd="${1:-}"
 
     case "$cmd" in

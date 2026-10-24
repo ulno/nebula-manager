@@ -20,6 +20,7 @@ CERT_STORE_LOG_NAME="nebula-manager.log"
 _CERT_STORE_GIT_HINT="${_CERT_STORE_GIT_HINT:-0}"
 _CERT_STORE_LOG_WARNED="${_CERT_STORE_LOG_WARNED:-0}"
 CERT_STORE_LAST_SNAPSHOT="${CERT_STORE_LAST_SNAPSHOT:-}"
+_CERT_STORE_LOGGING="${_CERT_STORE_LOGGING:-0}"
 
 cert_store_log_file() {
     printf '%s/%s' "${1:-$(resolve_cert_dir)}" "$CERT_STORE_LOG_NAME"
@@ -33,17 +34,23 @@ cert_store_is_git() {
 }
 
 # cert_store_log <dir> <message...> ; append one audit line (never fails hard).
+# Re-entrancy guard: the elevated write fallback goes through elevate ->
+# debug_print_cmd -> cert_store_log_command, which must not log itself.
 cert_store_log() {
     local dir="$1"; shift
     [[ -d "$dir" ]] || return 0
+    local prev="${_CERT_STORE_LOGGING:-0}"
+    _CERT_STORE_LOGGING=1
     local logf line user host
     logf="$(cert_store_log_file "$dir")"
     user="$(id -un 2>/dev/null || echo unknown)"
     host="$(hostname 2>/dev/null || echo unknown)"
     printf -v line '%s user=%s host=%s %s' "$(date -Is 2>/dev/null || date)" "$user" "$host" "$*"
-    [[ -n "${NEBULA_MANAGER_CMDLINE:-}" ]] && line+=" cmd=\"$NEBULA_MANAGER_CMDLINE\""
+    [[ -n "${NEBULA_MANAGER_CMDLINE:-}" ]] && line+=" invoked=\"$NEBULA_MANAGER_CMDLINE\""
     line="${line//$'\n'/ }"
-    if ! printf '%s\n' "$line" >> "$logf" 2>/dev/null; then
+    if printf '%s\n' "$line" >> "$logf" 2>/dev/null; then
+        chmod 600 "$logf" 2>/dev/null || true
+    else
         if declare -F elevate >/dev/null; then
             printf '%s\n' "$line" | elevate tee -a "$logf" >/dev/null 2>&1 || true
         fi
@@ -51,9 +58,21 @@ cert_store_log() {
             log_warn "Could not write the certificate-store log at $logf."
             _CERT_STORE_LOG_WARNED=1
         fi
-        return 0
     fi
-    chmod 600 "$logf" 2>/dev/null || true
+    _CERT_STORE_LOGGING="$prev"
+    return 0
+}
+
+# cert_store_log_command <formatted-command>
+# Called by debug_print_cmd in learn mode: record the exact command shown to the
+# user in the store audit log (when a certificate workspace is known).
+cert_store_log_command() {
+    local cmd="${1:-}" dir
+    [[ -n "$cmd" ]] || return 0
+    (( ${_CERT_STORE_LOGGING:-0} )) && return 0
+    dir="${CERT_STORE_AUDIT_DIR:-${CERT_DIR_OVERRIDE:-${NEBULA_KEYS_DIR:-}}}"
+    [[ -n "$dir" && -d "$dir" ]] || return 0
+    cert_store_log "$dir" "exec cmd=\"$cmd\""
     return 0
 }
 
@@ -178,6 +197,7 @@ cert_store_snapshot_before() {
         cert_store_log "$dir" "snapshot reason=\"$reason\" mode=none files=0"
         return 0
     fi
+    debug_explain "Snapshotting $dir before changes (git commit when tracked, otherwise a datestamped backups/ folder)."
 
     local mode="" path="" is_git=0
     cert_store_is_git "$dir" && is_git=1
@@ -322,6 +342,7 @@ cert_store_cli() {
         shift
     done
     dir="${dir:-$(resolve_cert_dir)}"
+    CERT_STORE_AUDIT_DIR="$dir"; export CERT_STORE_AUDIT_DIR
     case "$sub" in
         status) cert_store_status "$dir" ;;
         log)

@@ -77,6 +77,7 @@ resolve_cert_dir() {
 ensure_cert_dir() {
     local dir="${1:-$(resolve_cert_dir)}"
     ensure_dir "$dir" || return 1
+    CERT_STORE_AUDIT_DIR="$dir"; export CERT_STORE_AUDIT_DIR
     printf '%s\n' "$dir"
 }
 
@@ -214,6 +215,8 @@ select_cert_workspace() {
     save_cert_dir_selection "$CERT_DIR_SELECTED"
     ensure_dir "$CERT_DIR_SELECTED" || { log_error "Could not create $CERT_DIR_SELECTED"; return 1; }
     log_success "Active certificate workspace set to: ${CYAN}$CERT_DIR_SELECTED${RESET}"
+    CERT_STORE_AUDIT_DIR="$CERT_DIR_SELECTED"; export CERT_STORE_AUDIT_DIR
+    debug_explain "Switching the active workspace changes which .crt/.key files all certificate actions use."
     if declare -F cert_store_log >/dev/null; then
         cert_store_log "$CERT_DIR_SELECTED" "workspace-select dir=\"$CERT_DIR_SELECTED\""
     fi
@@ -296,6 +299,7 @@ pki_cert_days_left() {
 #   CA_NAME, CA_DURATION, CA_GROUPS, CA_IPS, CA_SUBNETS, CA_ENCRYPT, CERT_DIR
 pki_ca_create() {
     local cert_dir="${CERT_DIR:-$(resolve_cert_dir)}"
+    CERT_STORE_AUDIT_DIR="$cert_dir"; export CERT_STORE_AUDIT_DIR
     local bin; bin="$(pki_cert_bin)" || return 1
     local name="${CA_NAME:?CA name is required}"
     local duration="${CA_DURATION:-999999h}"
@@ -307,6 +311,8 @@ pki_ca_create() {
     [[ "${CA_ENCRYPT:-n}" == "y" ]] && args+=(-encrypt)
 
     ensure_dir "$cert_dir" || return 1
+    debug_explain "Creating a certificate authority: ca.crt is the public trust anchor and ca.key signs every client certificate."
+    debug_explain "Keep ca.key secret and never copy it to a client; an existing CA is snapshotted first."
     # Preserve the old CA (if any) before regenerating it.
     if declare -F cert_store_snapshot_before >/dev/null; then
         cert_store_snapshot_before "$cert_dir" "ca-create $name" \
@@ -335,6 +341,7 @@ pki_sign() {
     local name="${SIGN_NAME:?certificate name is required}"
     local ip="${SIGN_IP:?certificate IP is required}"
     local in_pub="${SIGN_IN_PUB:-}"
+    CERT_STORE_AUDIT_DIR="$cert_dir"; export CERT_STORE_AUDIT_DIR
     local ca_crt ca_key
     ca_crt="$(find_ca_crt "$cert_dir")" || { log_error "CA certificate not found in $cert_dir"; return 1; }
     ca_key="$(find_ca_key "$cert_dir")" || { log_error "CA key not found in $cert_dir"; return 1; }
@@ -351,6 +358,15 @@ pki_sign() {
     [[ -n "$in_pub" ]] && used_pub=yes
     if (( overwrite )) && declare -F cert_store_snapshot_before >/dev/null; then
         cert_store_snapshot_before "$cert_dir" "sign $name (overwrite)" "$out_crt" "$out_key" || true
+    fi
+    debug_explain "Signing '$name' for overlay IP(s) '$ip' with groups '${SIGN_GROUPS:-none}' using the CA in $cert_dir."
+    if [[ -n "$in_pub" ]]; then
+        debug_explain "Device-generated public key: the private key stays on the device and no .key is written here."
+    else
+        debug_explain "A new private key (.key) is written next to the certificate; deliver it only to that device."
+    fi
+    if (( overwrite )); then
+        debug_explain "Existing certificate/key files are replaced; the snapshot above keeps the old ones."
     fi
     local tmpdir out_tmp key_tmp
     tmpdir="$(mktemp -d)" || return 1
@@ -826,6 +842,8 @@ remove_cert() {
 pki_remove() {
     local name="$1" certs_dir="${2:-$(resolve_cert_dir)}"
     local crt_file="$certs_dir/$name.crt" key_file="$certs_dir/$name.key"
+    CERT_STORE_AUDIT_DIR="$certs_dir"; export CERT_STORE_AUDIT_DIR
+    debug_explain "Removing '$name' (certificate + private key) from the store; a snapshot/backup is taken first."
     if [[ -f "$crt_file" && -f "$key_file" ]]; then
         if declare -F cert_store_snapshot_before >/dev/null; then
             cert_store_snapshot_before "$certs_dir" "remove $name" "$crt_file" "$key_file" || true
@@ -844,6 +862,7 @@ pki_remove() {
 revoke_cert() {
     local certs_dir config_file
     certs_dir="$(resolve_cert_dir)"
+    CERT_STORE_AUDIT_DIR="$certs_dir"; export CERT_STORE_AUDIT_DIR
     config_file="${NEBULA_DIR:-/etc/nebula}/config.yml"
     local bin_path; bin_path="$(dirname "$(pki_cert_bin)")"
 
@@ -933,6 +952,7 @@ revoke_cert() {
     local reason
     read -p "$(show_status 'question') Enter a reason for revocation: " reason
     if [[ "$revoke_by_name" == true ]]; then
+        debug_explain "Revocation records the fingerprint in the Nebula blocklist and renames the local cert/key to *.revoked."
         if declare -F cert_store_snapshot_before >/dev/null; then
             cert_store_snapshot_before "$certs_dir" "revoke $cert_name_or_fingerprint" "$cert_file" "$cert_key" || true
         fi
@@ -1295,6 +1315,7 @@ pki_write_client_config() {
     if [[ -n "$policy_path" ]]; then
         [[ -f "$policy_path" ]] || { log_error "Policy pack not found: $policy_path"; return 1; }
         command -v yq >/dev/null 2>&1 || { log_error "yq is required to embed a firewall policy pack."; return 1; }
+        debug_explain "Using firewall policy pack '$(basename "$policy_path" .yml)' instead of the detected firewall."
     fi
 
     local is_lh=0 am_lh="false"
@@ -1504,6 +1525,7 @@ pki_bundle_client_zip() {
     local out_dir="${2:-$(pki_default_bundle_dir)}"
     local cert_dir="${3:-$(resolve_cert_dir)}"
     local policy_path="${4:-}"
+    CERT_STORE_AUDIT_DIR="$cert_dir"; export CERT_STORE_AUDIT_DIR
     local crt="$cert_dir/$name.crt" key="$cert_dir/$name.key"
     local ca; ca="$(find_ca_crt "$cert_dir" || true)"
 
@@ -1518,6 +1540,8 @@ pki_bundle_client_zip() {
         fi
         log_info "Using firewall policy pack: $(basename "$policy_path" .yml)"
     fi
+    debug_explain "Bundling the client certificate, private key, ca.crt and a config template; the archive is mode 0600 because it contains the key."
+    [[ -n "$policy_path" ]] && debug_explain "Embedding firewall policy pack '$(basename "$policy_path" .yml)' in the config template."
 
     ensure_dir "$out_dir" || return 1
     if [[ "$out_dir" == "$cert_dir" ]]; then
@@ -1759,6 +1783,7 @@ pki_group_preview_text() {
 # Each original certificate is backed up to <name>.crt.bak (only once).
 pki_group_apply() {
     local cert_dir="${1:-$(resolve_cert_dir)}"
+    CERT_STORE_AUDIT_DIR="$cert_dir"; export CERT_STORE_AUDIT_DIR
     if (( ${#PKI_RENAME_FILES[@]} == 0 )); then
         log_warn "Nothing to re-sign - run pki_group_scan first."
         return 1
@@ -1768,6 +1793,10 @@ pki_group_apply() {
     bin_path="$(dirname "$bin")"
     ca_crt="$(find_ca_crt "$cert_dir")" || { log_error "CA certificate not found in $cert_dir"; return 1; }
     ca_key="$(find_ca_key "$cert_dir")" || { log_error "CA key not found in $cert_dir"; return 1; }
+
+    debug_explain "Re-signing ${#PKI_RENAME_FILES[@]} certificate(s) for group action '${PKI_GROUP_ACTION:-resign}'."
+    debug_explain "Groups are embedded in the certificate, so it must be re-issued. Name, networks, subnets and expiry are preserved; device private keys are not touched."
+    debug_explain "A throwaway public key is used for each re-sign, so the existing device key keeps working."
 
     # Snapshot the old certificates/keys once, before re-signing any of them.
     if declare -F cert_store_snapshot_before >/dev/null; then

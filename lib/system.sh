@@ -292,6 +292,7 @@ check_nebula_config() {
     _nebula_info_derive "$cfg" "$source_cfg" >/dev/null 2>&1 || true
 
     echo -e "$(show_status 'info') ${CYAN}Testing Nebula config: ${config_file}${RESET}"
+    debug_explain "Running 'nebula -test -config' validates syntax and referenced files; the service is not restarted."
     local output status needed_elevation=0 tried_elevated=0
     [[ "$cfg" != "$config_file" ]] && needed_elevation=1
 
@@ -681,6 +682,7 @@ restart_service_prompt() {
 
 # Function to restart all enabled Nebula servers
 restart_nebula_servers() {
+    debug_explain "Restarting the configured Nebula services; existing tunnels reconnect."
     rm -f /tmp/nebula_failed_*
     local -a servers
     mapfile -t servers < <(
@@ -744,6 +746,7 @@ restart_nebula_servers() {
 # Function to toggle the Nebula service
 toggle_nebula_service() {
     local service_name; service_name=$(basename "$NEBULA_SERVICE")
+    debug_explain "Toggling the Nebula systemd service ($service_name); running tunnels reconnect."
     check_nebula_config "$NEBULA_DIR/config.yml" || return
     local cur; systemctl is-active --quiet "$service_name" && cur=active || cur=inactive
     log_info "Current state: ${YELLOW}${cur}${RESET}"
@@ -2094,6 +2097,7 @@ firewall_add_rule() {
     fi
     _firewall_port_valid "$port"  || { log_error "Invalid port: $port"; return 2; }
     _firewall_proto_valid "$proto" || { log_error "Invalid protocol: $proto"; return 2; }
+    debug_explain "Adding a $direction rule ($port/$proto) to this host's firewall; rule 'groups' match the PEER's certificate groups."
     prefix=".firewall.$direction"
     if ! yq -e '.firewall' "$config_file" >/dev/null 2>&1; then
         yq -i '.firewall = {}' "$config_file" || return 1

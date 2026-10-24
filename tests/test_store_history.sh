@@ -148,7 +148,7 @@ bash "$REPO_ROOT/nebula-manager" cert store backup --reason cli-test --cert-dir 
 assert_eq "CLI backup adds a folder" "$(backup_count)" "$((before + 1))"
 assert_contains "CLI backup reason" "$(cat "$(latest_backup)/ACTION.txt")" "reason: cli-test"
 assert_contains "CLI backup records the command" "$(cat "$(latest_backup)/ACTION.txt")" "command:"
-assert_contains "log records the triggering command" "$(cat "$LOG")" "cmd="
+assert_contains "log records the triggering command" "$(cat "$LOG")" "invoked="
 
 bash "$REPO_ROOT/nebula-manager" cert store git-init --cert-dir "$gkeys" >/dev/null 2>&1
 assert_eq "git-init on an existing repo succeeds" "$?" "0"
