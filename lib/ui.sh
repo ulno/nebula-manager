@@ -504,6 +504,14 @@ _ui_checklist_geometry() {
     _UI_PAIRS=("${items[@]}")
 }
 
+# ui_checklist_hint ; interaction help for the current checklist backend.
+ui_checklist_hint() {
+    case "$(ui_backend)" in
+        whiptail|dialog) printf 'Space toggles, Enter confirms.' ;;
+        *) printf 'Enter numbers or ranges (1,3-4), "all", or "none".' ;;
+    esac
+}
+
 # ui_checklist <title> <prompt> <tag> <desc> <on|off> [...]
 # Curses backends show a real checkbox list; plain mode lists [x]/[ ] items and
 # accepts "all", "none", "1,3,5" or "2-4" (empty input keeps the defaults).

@@ -76,6 +76,20 @@ export NEBULA_UI=plain
 assert_eq "plain forced for menus"  "$(ui_backend)" "plain"
 assert_eq "plain forced for browse" "$(ui_browse_backend)" "plain"
 
+# Checklist interaction help must match the backend (never mention space in
+# numeric plain mode).
+assert_contains "plain checklist hint is numeric" "$(ui_checklist_hint)" "1,3-4"
+assert_not_contains "plain checklist hint avoids curses keys" "$(ui_checklist_hint)" "Space toggles"
+if command -v whiptail >/dev/null 2>&1; then
+    export NEBULA_UI=whiptail
+    assert_contains "whiptail checklist hint mentions space" "$(ui_checklist_hint)" "Space toggles"
+fi
+if command -v dialog >/dev/null 2>&1; then
+    export NEBULA_UI=dialog
+    assert_contains "dialog checklist hint mentions space" "$(ui_checklist_hint)" "Space toggles"
+fi
+export NEBULA_UI=plain
+
 # --- ui_report is available and reports the selection ---
 report="$(ui_report)"
 assert_contains "ui_report shows the menu backend"   "$report" "menu backend:"

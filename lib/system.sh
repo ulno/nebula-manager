@@ -2039,9 +2039,11 @@ firewall_pick_groups() {
         triples+=( "__manual__" "Type a group name manually…" "off" )
     fi
 
-    local chosen tag
+    local chosen tag hint
+    hint="$(ui_checklist_hint)"
     chosen="$(ui_checklist "Peer groups" \
-        "Groups this rule applies to (none = no group constraint)." "${triples[@]}")" || return 1
+        "Groups this rule applies to (none = no group constraint).
+$hint" "${triples[@]}")" || return 1
 
     local -a picked=() selected=()
     while IFS= read -r tag; do

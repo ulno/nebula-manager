@@ -63,8 +63,11 @@ assert_not_contains "filter prompt avoids old story groups" "$prompt" "name:thep
 
 # The interactive selector still applies a chosen filter (checklist defaults on).
 # Use redirection (not a pipe) so SEL_* stays in this shell.
-cert_select_tui "$keys" <<< $'group:laptops\n\n' >/dev/null 2>&1
+cert_select_tui "$keys" <<< $'group:laptops\n\n' >/dev/null 2>"$SANDBOX/tui.err"
 assert_eq "TUI selector applies the filter" "${#SEL_FILES[@]}" "3"
+tui_err="$(cat "$SANDBOX/tui.err")"
+assert_contains "plain checklist hint is numeric" "$tui_err" "1,3-4"
+assert_not_contains "plain checklist hint avoids curses keys" "$tui_err" "Space toggles"
 
 cert_select_tui "$keys" <<< $'group:nosuchgroup\nn\n' >/dev/null 2>&1; rc=$?
 assert_eq "filter retry can be cancelled" "$rc" "1"

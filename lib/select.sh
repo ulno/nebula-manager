@@ -284,8 +284,9 @@ cert_select_tui() {
         triples+=( "$tag" "$desc" "on" )
     done
 
-    local chosen tags_out
-    chosen="$(ui_checklist "Select certificates" "Space toggles, Enter confirms." "${triples[@]}")" \
+    local chosen tags_out hint
+    hint="$(ui_checklist_hint)"
+    chosen="$(ui_checklist "Select certificates" "$hint" "${triples[@]}")" \
         || { log_info "Canceled."; return 1; }
 
     local -a files=() names=() ips=() groups=()
