@@ -395,6 +395,59 @@ future policy will use the same picker).
 > Note: an existing `.crt.bak` is never overwritten, so a second rename keeps
 the *original* certificate around for rollback.
 
+### Phase 2d — One firewall policy for all home machines (✅ available)
+
+theprof has tuned the framework's firewall and now wants **the same rules on
+every `home` machine**, including the ones already installed. He saves that
+firewall as a named **policy pack** and lets nebula-manager render it per host.
+
+**TUI:** *Configuration ▸ Edit Firewall ▸ Policy packs ▸ New pack from this
+host's firewall* → name `home`, suggested groups `home`.
+
+```bash
+$ nebula-manager policy new home --groups home --description "Home machines"
+$ nebula-manager policy list
+  home             home                3 rule(s)  Home machines
+$ nebula-manager policy show home
+$ nebula-manager policy validate home
+```
+
+A pack is just a user-owned YAML file
+(`~/.config/nebula-manager/policies/home.yml`) with a `firewall:` fragment and
+the groups it is meant for. Nothing here needs root.
+
+**New machines:** when he bundles a certificate in group `home`, nebula-manager
+**suggests** the `home` pack (explicit menu in the TUI; a hint in the CLI). The
+chosen pack is embedded instead of the locally detected firewall:
+
+```bash
+$ nebula-manager cert bundle theprof-ge75.theprof.mesh --policy home
+$ nebula-manager cert bundle theprof-ge75.theprof.mesh --policy none   # opt out
+```
+
+The bundle's `config.yml.template` then starts the firewall with
+`# Firewall policy pack: home` and the pack's rules.
+
+**Existing machines** (theprof3/.4 are already running): render the pack for
+every matching certificate and copy the result over:
+
+```bash
+$ nebula-manager policy export --pack home --select group:home --out ./policies/
+# ./policies/theprof3.theprof.mesh/firewall.yml
+# ./policies/theprof3.theprof.mesh/README.txt   (scp + yq + restart commands)
+```
+
+Distribution is deliberately explicit (scp/ansible); nebula-manager does not
+reach into remote hosts. On the machine itself he can also apply a pack
+directly (working copy, diff confirmation, backup when elevation is needed):
+
+```bash
+$ nebula-manager policy apply --pack home --nebula-config /etc/nebula/config.yml
+```
+
+Student groups later reuse the same mechanism: a `students` pack with
+`groups: [students]` and per-group rules, embedded into every student bundle.
+
 ### Phase 3 — Two student groups of three machines (⚙️ planned "profiles")
 
 **TUI:** ⚙️ planned *Profiles ▸ Create group*.
@@ -550,7 +603,7 @@ the student's machine.
 | Create CA, sign certs, list/inspect/expiry, remove | ✅ today |
 | **Batch group editing** (add/remove/move/set/rename/prune with a selector) | ✅ today |
 | **Firewall group picker + rule templates + `firewall explain`** (this host) | ✅ today |
-| **Policy packs** rendered into bundles for every member of a group | ⚙️ planned |
+| **Policy packs** (create, embed in bundles, apply here, export per host) | ✅ today |
 | Unprivileged cert workspace (`--cert-dir` / `NEBULA_KEYS_DIR` / auto-detect) | ✅ today |
 | Client bundle (cert, key, `ca.crt`, config template) | ✅ today |
 | Tool config resolution + `config init/refresh/edit` (offline template) | ✅ today |

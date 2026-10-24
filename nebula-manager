@@ -70,7 +70,7 @@ resolve_lib_dir() {
 }
 
 MANAGER_LIB_DIR="$(resolve_lib_dir)"
-for _mod in ui pki select bench system import; do
+for _mod in ui pki select bench system import policy; do
     if [[ -r "$MANAGER_LIB_DIR/$_mod.sh" ]]; then
         # shellcheck source=/dev/null
         source "$MANAGER_LIB_DIR/$_mod.sh"
@@ -354,6 +354,10 @@ Commands:
   firewall explain|groups [--nebula-config FILE] [--cert-dir DIR]
                                   Read-only policy summary (rules, defaults,
                                   per-group match counts) or list groups
+  policy list|show|new|edit|delete|validate|apply|export
+                                  Firewall policy packs: create from this host's
+                                  firewall, embed in bundles, apply or export
+                                  per host for an existing fleet
   config path|init|refresh|edit|remove   Manage nebula-manager.conf (offline template)
   server add|list|remove|...      Manage [server.*] entries in nebula-manager.conf
   import [--dry-run] [--yes]      Detect a running Nebula and generate nebula-manager.conf
@@ -442,6 +446,7 @@ main() {
         diag|diagnose)  shift; diag_cli "$@" ;;
         dns)            shift; dns_cli "$@" ;;
         firewall|fw)    shift; firewall_cli "$@" ;;
+        policy|policies) shift; policy_cli "$@" ;;
         config|conf)    shift; config_cli "$@" ;;
         server|srv)     shift; server_cli "$@" ;;
         import)         shift; import_cli "$@" ;;

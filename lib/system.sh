@@ -2365,8 +2365,9 @@ manage_firewall() {
         echo -e "        ${BOLD}${YELLOW}3.${RESET} $(get_icon 'security')Configure General Firewall Settings"
         echo -e "        ${BOLD}${YELLOW}4.${RESET} $(get_icon 'create')Add a group-based rule from a template"
         echo -e "        ${BOLD}${YELLOW}5.${RESET} $(get_icon 'inspect')Show the effective policy (read-only)"
-        echo -e "        ${BOLD}${YELLOW}6.${RESET} $(get_icon 'back')${BOLD}Go Back${RESET}"
-        read -p "$(show_status 'question') Choose an option [1-6]: " choice
+        echo -e "        ${BOLD}${YELLOW}6.${RESET} $(get_icon 'package')Policy packs (create / apply / export)"
+        echo -e "        ${BOLD}${YELLOW}7.${RESET} $(get_icon 'back')${BOLD}Go Back${RESET}"
+        read -p "$(show_status 'question') Choose an option [1-7]: " choice
         case "$choice" in
             1) configure_inbound_rules ;;
             2) configure_outbound_rules ;;
@@ -2376,7 +2377,8 @@ manage_firewall() {
                 policy="$(firewall_explain "$config_file")"
                 if [[ -n "$policy" ]]; then ui_textbox "Firewall policy" "$policy"; fi
                 ;;
-            6) break ;;
+            6) policy_manage_tui "$config_file" ;;
+            7) break ;;
             *) log_error "Invalid option. Please choose again." ;;
         esac
     done

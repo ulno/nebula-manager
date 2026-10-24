@@ -418,7 +418,7 @@ headless subcommands for scripting — see *Expert / scriptable* below.
 | **Setup** | shows the **detected state** (config, Nebula service, cert workspace), then: import/update from this host, **import a client bundle (.zip/.tar.gz)**, create, browse, edit, delete `nebula-manager.conf`, manage servers, pick the certificate workspace |
 | **Servers** | list / add / enable-disable / remove `[server.*]` entries |
 | **Certificates** | list, create CA, sign, **edit groups in bulk** (add/remove/move/set/rename with a filter), view, expiry, **bundle/export** (pick from a list), revoke, switch workspace |
-| **Configuration** | validate / edit Nebula `config.yml` (service-owned files are edited on a working copy and saved once with a timestamped backup), edit firewall rules with a **group picker + rule templates + explain**, **name resolution (Nebula DNS)** |
+| **Configuration** | validate / edit Nebula `config.yml` (service-owned files are edited on a working copy and saved once with a timestamped backup), edit firewall rules with a **group picker + rule templates + explain**, **policy packs** (embed in bundles / apply / export), **name resolution (Nebula DNS)** |
 | **Connectivity** | ping every cert IP; optional `iperf3` test |
 | **Diagnostics** | TUN IP, listening UDP socket, certificate expiry; reads a service-owned config once with temporary sudo and caches the header values |
 | **Benchmarks** | `iperf3` server / client |
@@ -487,6 +487,11 @@ commands and any errors remain visible for verification. Use `--clear-screen`
 #   ^ read-only: defaults, every rule, and how many certs each group rule matches
 ./nebula-manager firewall groups --cert-dir ~/keys/nebula
 #   ^ groups available to rules, with member counts
+./nebula-manager policy new home --groups home --description "Home machines"
+./nebula-manager policy list
+./nebula-manager cert bundle theprof-ge75.theprof.mesh --policy home
+./nebula-manager policy export --pack home --select group:home --out ./policies/
+./nebula-manager policy apply --pack home --nebula-config /etc/nebula/config.yml
 
 # Utilities
 ./nebula-manager paths                  # resolved config / key dirs, info cache + UI backend
@@ -598,9 +603,74 @@ nebula-manager firewall explain [--nebula-config FILE] [--cert-dir DIR]
 nebula-manager firewall groups  [--cert-dir DIR]
 ```
 
-Managing one policy across a **fleet** (rendering the same group rules into the
-bundles for every member of a group) is planned as **policy packs**; today the
-explained policy and the editor are always this host's.
+### Policy packs (fleet)
+
+A **policy pack** is a named firewall fragment stored user-side (no root):
+
+```text
+${XDG_CONFIG_HOME:-~/.config}/nebula-manager/policies/<name>.yml
+```
+
+```yaml
+name: home
+description: Home machines
+groups: [home]          # suggestion metadata, not a firewall rule
+firewall:
+  inbound_action: drop
+  inbound:
+    - port: any
+      proto: any
+      groups: [home]
+  outbound:
+    - port: any
+      proto: any
+      host: any
+```
+
+**Create one from this host's firewall** (reads it once with the usual
+one-time-sudo path if it is service-owned):
+
+```bash
+nebula-manager policy new home --groups home --description "Home machines"
+nebula-manager policy list
+nebula-manager policy show home
+nebula-manager policy edit home
+nebula-manager policy validate home
+```
+
+**Bundles:** when a certificate's groups intersect a pack's `groups`, the bundle
+flow **offers** that pack. Headless runs only print a hint — nothing is embedded
+unless you ask:
+
+```bash
+nebula-manager cert bundle theprof-ge75.theprof.mesh --policy home
+nebula-manager cert bundle theprof-ge75.theprof.mesh --policy none   # opt out
+```
+
+The generated `config.yml.template` then carries the pack's `firewall:` section
+(and a `# Firewall policy pack: home` header) instead of the detected rules.
+
+**Existing fleet:** render the pack for every matching certificate. Each host
+gets its own directory with the firewall fragment and copy/paste instructions:
+
+```bash
+nebula-manager policy export --pack home --select group:home --out ./policies/
+# ./policies/theprof-ge75.theprof.mesh/firewall.yml
+# ./policies/theprof-ge75.theprof.mesh/README.txt
+```
+
+Actual distribution stays explicit (scp/ansible/whatever you use).
+
+**Apply here** (working copy, diff confirmation, validation):
+
+```bash
+nebula-manager policy apply --pack home --nebula-config /etc/nebula/config.yml
+nebula-manager policy apply --pack home --yes        # scripted
+```
+
+In the TUI, packs live under **Configuration ▸ Edit Firewall ▸ Policy packs**,
+where a pack can also be applied to the config currently being edited (the
+firewall diff/confirm still applies on the way out), shown, edited or deleted.
 
 ### Global flags
 
@@ -855,6 +925,7 @@ What it covers:
 | `tests/test_rename_group.sh` | group migration: preview/scan, dedup + order, re-sign preserves name/IP/expiry, unaffected certs/keys byte-identical, `*.crt.bak`, no sudo, CLI `--yes`/non-tty refusal |
 | `tests/test_group_batch.sh` | selector grammar (`group`/`without`/`name` glob/`ip` CIDR/`cert`/union/exclude) + batch add/remove/move/set/prune, idempotency, `--dry-run`, non-tty refusal, `group list`, plain checklist parsing |
 | `tests/test_firewall_groups.sh` | firewall group discovery/counts, picker (defaults/manual/unknown groups), rule templates, editor picker wiring, explain (defaults/matches/typo warning), diff + save prompt, CLI |
+| `tests/test_policy_packs.sh` | policy packs: create/list/show/validate, group-based suggestions, embedding in generated configs/bundles (CLI + TUI), per-host export, apply (working copy + `--yes`), delete, no sudo |
 | `tests/pki.bats` | BATS mirror of the core unprivileged-PKI guarantees |
 
 Requirements: `bash`, `nebula-cert` (for PKI tests; auto-skipped otherwise).
