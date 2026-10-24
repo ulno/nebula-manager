@@ -221,8 +221,11 @@ affected certificates**. Instead of one hard-wired rename, nebula-manager uses a
 
 **Certificates ▸ Edit Groups (Batch)…**
 
-1. type a **filter** — `all`, `group:laptops`, `without:home`, `name:theprof-*`,
-   `ip:10.100.0.0/24` (unions and exclusions are supported);
+1. type a **filter** — the prompt is built from **this workspace's actual
+groups and overlay networks, with counts** (e.g. `Groups: home (3), admin (1)`,
+`Networks: 10.100.0.0/24 (4)`), and the examples are generic (`group:NAME`,
+`name:GLOB`, `ip:CIDR`). Unions and exclusions are supported; an invalid filter
+offers to retry;
 2. confirm the matches in a **checkbox list** (all pre-selected; space toggles);
 3. pick an **action**: add, remove, move, set or rename;
 4. review the exact per-certificate diff and confirm;

@@ -1889,10 +1889,11 @@ pki_group_apply() {
 pki_rename_group_tui() {
     local cert_dir; cert_dir="$(resolve_cert_dir)"
     ensure_cert_dir >/dev/null || return 1
-    local old new
-    old="$(ui_input "Rename group" "Group to rename (e.g. laptops):")" || { log_info "Canceled."; return 0; }
+    local old new available=""
+    declare -F cert_group_summary >/dev/null && available="$(cert_group_summary "$cert_dir")"
+    old="$(ui_input "Rename group" "Group to rename${available:+ (available: $available)}:")" || { log_info "Canceled."; return 0; }
     [[ -z "$old" ]] && { log_info "Canceled."; return 0; }
-    new="$(ui_input "Rename group" "New group name (e.g. theprof):")" || { log_info "Canceled."; return 0; }
+    new="$(ui_input "Rename group" "New group name:")" || { log_info "Canceled."; return 0; }
     [[ -z "$new" ]] && { log_info "Canceled."; return 0; }
     if [[ "$old" == "$new" ]]; then
         log_warn "Old and new group names are identical - nothing to do."
@@ -2018,11 +2019,11 @@ Options:
   -h, --help       This help
 
 Examples:
-  nebula-manager group add home --select group:laptops
-  nebula-manager group move laptops home --select group:laptops
-  nebula-manager group prune laptops --when group:home
-  nebula-manager group set "home,admin" --select name:theprof-*
-  nebula-manager group rename laptops home --yes
+  nebula-manager group add example-group2 --select group:example-group1
+  nebula-manager group move example-group1 example-group2 --select group:example-group1
+  nebula-manager group prune example-group1 --when group:example-group2
+  nebula-manager group set "example-group1,example-group2" --select name:host-*
+  nebula-manager group rename example-group1 example-group2 --yes
 EOF
 }
 
@@ -2085,7 +2086,7 @@ group_cli() {
             log_error "group prune takes its selection from --when; do not also pass --select."; return 2
         fi
         [[ -n "$when_group" ]] && when="group:$when_group"
-        [[ -n "$when" ]] || { log_error "group prune requires --when <spec> (e.g. --when group:home)."; return 2; }
+        [[ -n "$when" ]] || { log_error "group prune requires --when <spec> (e.g. --when group:example-group)."; return 2; }
         if [[ "$when" != *:* && "$when" != all ]]; then when="group:$when"; fi
         selects=("$when")
     fi
@@ -2094,7 +2095,7 @@ group_cli() {
         selects=("group:$a")
     fi
     if (( ${#selects[@]} == 0 )); then
-        log_error "group $sub requires --select <spec> (example: --select group:laptops)."
+        log_error "group $sub requires --select <spec> (example: --select group:example-group)."
         return 2
     fi
 

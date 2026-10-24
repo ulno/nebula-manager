@@ -149,20 +149,130 @@ cert_select() {
     (( ${#SEL_FILES[@]} > 0 ))
 }
 
+# _ipv4_network <addr[/prefix]> ; print the network address/prefix (IPv4).
+# Non-IPv4 values are returned unchanged.
+_ipv4_network() {
+    local cidr="$1" ip prefix n mask
+    ip="${cidr%%/*}"; prefix="${cidr##*/}"
+    [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || { printf '%s' "$cidr"; return 0; }
+    [[ "$prefix" =~ ^[0-9]+$ ]] || prefix=32
+    (( prefix > 32 )) && prefix=32
+    n="$(_ip4_to_int "$ip")"
+    if (( prefix == 0 )); then
+        mask=0
+    else
+        mask=$(( (0xFFFFFFFF << (32 - prefix)) & 0xFFFFFFFF ))
+    fi
+    printf '%s/%s' "$(_int_to_ip4 $(( n & mask )))" "$prefix"
+}
+
+# cert_group_counts [cert_dir] ; "group<TAB>cert-count", most-used first.
+cert_group_counts() {
+    local cert_dir="${1:-$(resolve_cert_dir)}" f have=0 i g
+    [[ -d "$cert_dir" ]] || return 0
+    for f in "$cert_dir"/*.crt; do [[ -f "$f" ]] && { have=1; break; }; done
+    (( have )) || return 0
+    declare -F cert_select >/dev/null || return 0
+    cert_select "$cert_dir" --select all >/dev/null 2>&1 || return 0
+    (
+        local IFS=','
+        for i in "${!SEL_GROUPS[@]}"; do
+            for g in ${SEL_GROUPS[i]}; do
+                g="${g#"${g%%[![:space:]]*}"}"
+                g="${g%"${g##*[![:space:]]}"}"
+                [[ -n "$g" ]] && printf '%s\n' "$g"
+            done
+        done
+    ) | sort | uniq -c | sort -k1,1nr -k2,2 | awk '{ print $2 "\t" $1 }'
+}
+
+# cert_group_summary [cert_dir] ; compact "group (count), …" line.
+cert_group_summary() {
+    cert_group_counts "${1:-$(resolve_cert_dir)}" | awk -F'\t' '
+        NF { if (++n <= 10) { printf "%s%s (%s)", sep, $1, $2; sep=", " } }
+        END { if (n > 10) printf ", …" }
+    '
+}
+
+# cert_network_counts [cert_dir] ; "network<TAB>cert-count", most-used first.
+# Counts each certificate once per distinct network (multiple IPs in one
+# network do not inflate the count).
+cert_network_counts() {
+    local cert_dir="${1:-$(resolve_cert_dir)}" f have=0 i ip
+    [[ -d "$cert_dir" ]] || return 0
+    for f in "$cert_dir"/*.crt; do [[ -f "$f" ]] && { have=1; break; }; done
+    (( have )) || return 0
+    declare -F cert_select >/dev/null || return 0
+    cert_select "$cert_dir" --select all >/dev/null 2>&1 || return 0
+    (
+        local -a ips=() nets=()
+        for i in "${!SEL_IPS[@]}"; do
+            IFS=',' read -ra ips <<< "${SEL_IPS[i]}"
+            nets=()
+            for ip in "${ips[@]}"; do
+                ip="${ip#"${ip%%[![:space:]]*}"}"
+                ip="${ip%"${ip##*[![:space:]]}"}"
+                [[ -z "$ip" ]] && continue
+                [[ "$ip" == */* ]] || ip+="/32"
+                nets+=("$(_ipv4_network "$ip")")
+            done
+            (( ${#nets[@]} )) || continue
+            printf '%s\n' "${nets[@]}" | sort -u
+        done
+    ) | sort | uniq -c | sort -k1,1nr -k2,2 | awk '{ print $2 "\t" $1 }'
+}
+
+# cert_select_filter_prompt [cert_dir]
+# Build the multi-line filter prompt from what is actually in the workspace
+# (groups and overlay networks), with generic syntax examples.
+cert_select_filter_prompt() {
+    local cert_dir="${1:-$(resolve_cert_dir)}"
+    local groups networks group_list net_list cert_count ip_example prompt
+
+    groups="$(cert_group_counts "$cert_dir")"
+    networks="$(cert_network_counts "$cert_dir")"
+    group_list="$(printf '%s\n' "$groups" | awk -F'\t' '
+        NF { if (++n <= 10) { printf "%s%s (%s)", sep, $1, $2; sep=", " } }
+        END { if (n > 10) printf ", …" }
+    ')"
+    net_list="$(printf '%s\n' "$networks" | awk -F'\t' '
+        NF { if (++n <= 6) { printf "%s%s (%s)", sep, $1, $2; sep=", " } }
+        END { if (n > 6) printf ", …" }
+    ')"
+    cert_count="$(find "$cert_dir" -maxdepth 1 -type f -name '*.crt' ! -name 'ca.crt' 2>/dev/null | wc -l | tr -d ' ')"
+    [[ -n "$group_list" ]] || group_list="(none yet)"
+    [[ -n "$net_list" ]] || net_list="(none yet)"
+    ip_example="10.0.0.0/24"
+    if [[ -n "$networks" ]]; then
+        ip_example="$(printf '%s\n' "$networks" | head -n1 | cut -f1)"
+    fi
+
+    printf 'Certificate workspace: %s\n' "$cert_dir"
+    printf 'Certificates: %s\n' "$cert_count"
+    printf 'Groups: %s\n' "$group_list"
+    printf 'Networks: %s\n' "$net_list"
+    printf 'Filter: all | group:NAME | without:NAME | name:GLOB | ip:CIDR | cert:NAME\n'
+    printf 'Examples: group:example-group  name:example-host-*  ip:%s' "$ip_example"
+}
+
 # cert_select_tui [cert_dir]
-# Ask for a filter, then confirm an (all-on) checklist of the matches. Narrows
-# SEL_* to the chosen certificates. Returns 0 when at least one is selected.
+# Show the workspace's actual groups/networks, ask for a filter, then confirm an
+# (all-on) checklist of the matches. Narrows SEL_* to the chosen certificates.
 cert_select_tui() {
     local cert_dir="${1:-$(resolve_cert_dir)}"
-    local spec
-    spec="$(ui_input "Select certificates" \
-        "Filter (all, group:laptops, without:home, name:theprof-*, ip:10.100.0.0/24):" "all")" \
-        || return 1
-    [[ -z "$spec" ]] && spec="all"
-    if ! cert_select "$cert_dir" --select "$spec"; then
+    local prompt spec chosen
+
+    prompt="$(cert_select_filter_prompt "$cert_dir")"
+
+    while true; do
+        spec="$(ui_input "Select certificates" "$prompt" "all")" || return 1
+        [[ -z "$spec" ]] && spec="all"
+        if cert_select "$cert_dir" --select "$spec"; then
+            break
+        fi
         log_warn "No certificate matches '$spec' in $cert_dir."
-        return 1
-    fi
+        ui_yesno "Select certificates" "Try a different filter?" || return 1
+    done
 
     local i tag desc
     local -a triples=()

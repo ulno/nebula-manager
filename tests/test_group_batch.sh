@@ -39,6 +39,36 @@ SIGN_NAME="delta.mesh" SIGN_IP="10.42.0.5/24" SIGN_GROUPS="home,laptops" \
 gamma_before="$(hash_of "$keys/gamma.mesh.crt")"
 gamma_key_before="$(hash_of "$keys/gamma.mesh.key")"
 
+# --- workspace summary used by the interactive filter ----------------------
+assert_eq "network of an address" "$(_ipv4_network 10.42.0.3/24)" "10.42.0.0/24"
+assert_eq "network of a /30"       "$(_ipv4_network 10.42.0.3/30)" "10.42.0.0/30"
+assert_eq "network without prefix" "$(_ipv4_network 10.42.0.3)"   "10.42.0.3/32"
+
+networks="$(cert_network_counts "$keys")"
+assert_contains "network counts list the overlay" "$networks" $'10.42.0.0/24\t4'
+summary="$(cert_group_summary "$keys")"
+assert_contains "group summary lists a real group" "$summary" "laptops (3)"
+assert_contains "group summary lists another group" "$summary" "admin (1)"
+
+# The filter prompt must describe THIS workspace, not the documentation story.
+prompt="$(cert_select_filter_prompt "$keys")"
+assert_contains "filter prompt shows the workspace" "$prompt" "Certificate workspace: $keys"
+assert_contains "filter prompt shows the certificate count" "$prompt" "Certificates: 4"
+assert_contains "filter prompt lists actual groups" "$prompt" "laptops (3)"
+assert_contains "filter prompt lists actual networks" "$prompt" "10.42.0.0/24"
+assert_contains "filter prompt uses generic examples" "$prompt" "group:example-group"
+assert_contains "filter prompt uses a real network example" "$prompt" "ip:10.42.0.0/24"
+assert_not_contains "filter prompt avoids story names" "$prompt" "theprof"
+assert_not_contains "filter prompt avoids old story groups" "$prompt" "name:theprof-*"
+
+# The interactive selector still applies a chosen filter (checklist defaults on).
+# Use redirection (not a pipe) so SEL_* stays in this shell.
+cert_select_tui "$keys" <<< $'group:laptops\n\n' >/dev/null 2>&1
+assert_eq "TUI selector applies the filter" "${#SEL_FILES[@]}" "3"
+
+cert_select_tui "$keys" <<< $'group:nosuchgroup\nn\n' >/dev/null 2>&1; rc=$?
+assert_eq "filter retry can be cancelled" "$rc" "1"
+
 # --- selector grammar -------------------------------------------------------
 cert_select "$keys" --select all >/dev/null
 assert_eq "selector: all" "$(sel_names)" "alpha.mesh,beta.mesh,delta.mesh,gamma.mesh"

@@ -218,7 +218,7 @@ policy_export() {
         shift
     done
     (( ${#selects[@]} )) || {
-        log_error "policy export requires --select <spec> (e.g. --select group:home; use 'all' explicitly)."
+        log_error "policy export requires --select <spec> (e.g. --select group:example-group; use 'all' explicitly)."
         return 2
     }
     local pack_path; pack_path="$(policy_resolve "$pack")" || return
@@ -298,7 +298,7 @@ policy_create_tui() {
     if ! command -v yq >/dev/null 2>&1; then
         log_error "yq is required."; return 1
     fi
-    name="$(ui_input "New policy pack" "Pack name (e.g. home):")" || return 0
+    name="$(ui_input "New policy pack" "Pack name (e.g. policy1):")" || return 0
     [[ -z "$name" ]] && { log_info "Canceled."; return 0; }
     policy_name_valid "$name" || { log_error "Invalid policy name: '$name'"; return 1; }
     desc="$(ui_input "New policy pack" "Description (optional):")" || return 0

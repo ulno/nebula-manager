@@ -1996,22 +1996,11 @@ config_edit_cancel() {
 # Print "group<TAB>cert-count", most-used first. Quietly returns nothing when
 # there is no certificate workspace (e.g. a fresh host).
 firewall_known_groups() {
-    local cert_dir="${1:-$(resolve_cert_dir)}" f have=0 i g
-    [[ -d "$cert_dir" ]] || return 0
-    for f in "$cert_dir"/*.crt; do [[ -f "$f" ]] && { have=1; break; }; done
-    (( have )) || return 0
-    declare -F cert_select >/dev/null || return 0
-    cert_select "$cert_dir" --select all >/dev/null 2>&1 || return 0
-    (
-        local IFS=','
-        for i in "${!SEL_GROUPS[@]}"; do
-            for g in ${SEL_GROUPS[i]}; do
-                g="${g#"${g%%[![:space:]]*}"}"
-                g="${g%"${g##*[![:space:]]}"}"
-                [[ -n "$g" ]] && printf '%s\n' "$g"
-            done
-        done
-    ) | sort | uniq -c | sort -k1,1nr -k2,2 | awk '{ print $2 "\t" $1 }'
+    if declare -F cert_group_counts >/dev/null; then
+        cert_group_counts "${1:-$(resolve_cert_dir)}"
+        return 0
+    fi
+    return 0
 }
 
 # firewall_pick_groups <current-csv>
@@ -2919,7 +2908,7 @@ configure_client_dns() {
         return 1
     fi
     if [[ -z "$domain" ]]; then
-        read -rp "$(show_status 'question') Mesh DNS suffix to route (e.g. theprof.mesh): " domain
+        read -rp "$(show_status 'question') Mesh DNS suffix to route (e.g. example.mesh): " domain
         [[ -z "$domain" ]] && return 1
     fi
     if ! command -v resolvectl >/dev/null 2>&1; then
